@@ -7,11 +7,12 @@ IPv6 ルータ広告デーモン [go-ra (fork版)](https://github.com/y-kzm/go-r
 
 | クライアント一覧 | RA ポリシールール |
 |----------------|----------------|
-| ![Clients タブ](../imgs/clients.png) | ![RA Policy タブ](../imgs/rules.png) |
+| <img src="../imgs/clients.png" alt="Clients tab" width="420"> | <img src="../imgs/rules.png" alt="RA Policy tab" width="420"> |
+
 
 | ポリシーグループ作成 | ルール割り当て |
 |-------------------|-------------|
-| ![グループ作成](../imgs/groups.png) | ![ルール割り当て](../imgs/apply_rules.png) |
+| <img src="../imgs/groups.png" alt="Create group" width="420"> | <img src="../imgs/apply_rules.png" alt="Assign rules" width="420"> |
 
 ## アーキテクチャ
 

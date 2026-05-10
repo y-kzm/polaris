@@ -7,11 +7,11 @@ Configure routers, define routing rules, organise hosts into groups, and push th
 
 | Clients | RA Policy Rules |
 |---------|-----------------|
-| ![Clients tab](../imgs/clients.png) | ![RA Policy tab](../imgs/rules.png) |
+| <img src="../imgs/clients.png" alt="Clients tab" width="420"> | <img src="../imgs/rules.png" alt="RA Policy tab" width="420"> |
 
 | Create policy group | Assign rules |
 |---------------------|--------------|
-| ![Create group](../imgs/groups.png) | ![Assign rules](../imgs/apply_rules.png) |
+| <img src="../imgs/groups.png" alt="Create group" width="420"> | <img src="../imgs/apply_rules.png" alt="Assign rules" width="420"> |
 
 ## Architecture
 
