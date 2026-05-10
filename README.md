@@ -27,7 +27,7 @@ appropriate DRP/RIO values.
 
 ## Architecture
 
-![architecture](./imgs/architecture.png)
+![architecture](./imgs/overview.png)
 
 The administrator defines policies via the RA Controller's web UI.  The
 controller compiles each policy into a per-router gRPC `InterfaceConfig`
