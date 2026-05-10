@@ -1,0 +1,3 @@
+[submodule "go-ra"]
+	path = agent/go-ra
+	url = https://github.com/y-kzm/go-ra
