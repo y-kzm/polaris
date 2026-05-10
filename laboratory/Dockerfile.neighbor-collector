@@ -1,0 +1,12 @@
+# Build neighbor-collector-snmp from source (context: repo root)
+FROM golang:1.24-alpine AS builder
+WORKDIR /src
+COPY controller/modules/neighbor-collector-snmp/go.mod controller/modules/neighbor-collector-snmp/go.sum ./
+RUN go mod download
+COPY controller/modules/neighbor-collector-snmp/ .
+RUN go build -o /neighbor-collector-snmp .
+
+FROM alpine:3.21
+COPY --from=builder /neighbor-collector-snmp /neighbor-collector-snmp
+ENV ADDR=":8083"
+ENTRYPOINT ["/neighbor-collector-snmp"]

@@ -1,0 +1,7 @@
+# Upstream web server: nginx + iproute2 for return-route setup (context: repo root)
+FROM nginx:1.27-alpine
+RUN apk add --no-cache iproute2
+COPY laboratory/nginx-webserver.conf /etc/nginx/conf.d/default.conf
+COPY laboratory/entrypoint-webserver.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]

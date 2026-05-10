@@ -1,0 +1,7 @@
+# Lightweight end-host image: iproute2 + iputils for routing inspection
+# (context: repo root)
+FROM alpine:3.21
+RUN apk add --no-cache iproute2 iputils
+COPY laboratory/entrypoint-host.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]

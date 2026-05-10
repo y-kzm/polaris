@@ -1,0 +1,16 @@
+# Build go-ra agent from source (context: repo root)
+FROM golang:1.25-alpine AS builder
+WORKDIR /src
+COPY agent/go-ra/go.mod agent/go-ra/go.sum ./
+RUN go mod download
+COPY agent/go-ra/ .
+RUN go build -o /gorad ./cmd/gorad && \
+    go build -o /gora  ./cmd/gora
+
+FROM alpine:3.21
+RUN apk add --no-cache iproute2 iputils net-snmp curl
+COPY --from=builder /gorad /gorad
+COPY --from=builder /gora  /gora
+COPY laboratory/entrypoint-agent.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]

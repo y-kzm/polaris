@@ -1,0 +1,14 @@
+# Build controller backend from source (context: repo root)
+FROM golang:1.24-alpine AS builder
+RUN apk add --no-cache gcc musl-dev
+WORKDIR /src
+COPY controller/backend/go.mod controller/backend/go.sum ./
+RUN go mod download
+COPY controller/backend/ .
+RUN CGO_ENABLED=1 GOOS=linux go build -o /ra-controller ./cmd/server
+
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates
+COPY --from=builder /ra-controller /ra-controller
+EXPOSE 8080
+ENTRYPOINT ["/ra-controller"]
