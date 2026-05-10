@@ -1,0 +1,32 @@
+[Unit]
+Description=go-ra Router Advertisement Server
+Documentation=https://github.com/YutaroHayakawa/go-ra
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gorad
+Group=gorad
+
+# Update this path to match your actual installation directory.
+WorkingDirectory=/opt/go-ra-server
+
+ExecStart=/opt/go-ra-server/gorad -f /opt/go-ra-server/config.yaml -a localhost:50051
+
+# gorad requires raw ICMPv6 socket access to send and receive Router Advertisements.
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+
+# Restart on failure.
+Restart=on-failure
+RestartSec=5
+
+# Allow time for a goodbye RA to be sent on graceful shutdown.
+TimeoutStopSec=15
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
