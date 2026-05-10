@@ -1,0 +1,40 @@
+# ─── Backend: ra-controller ──────────────────────────────────────────────────
+backend:
+  port: 8080
+  db_path: controller.db
+  fetch_interval: 10          # neighbor poll interval (seconds)
+  neighbor_ifname: ""         # e.g. "eth0" — empty means no ifname filter
+
+# ─── Modules ─────────────────────────────────────────────────────────────────
+# Set enabled: true to activate a module. Each module must have a unique port.
+# name must match the directory under modules/ (underscores → hyphens).
+modules:
+  neighbor_collector_static:
+    enabled: true
+    port: 8083
+    neighbors: []
+
+  neighbor_collector_snmp:
+    enabled: true
+    port: 8084
+    poll_interval: 30  # seconds
+    # Routers to poll via SNMP.
+    # port defaults to 161, community defaults to "public" if omitted.
+    snmp_targets:
+      - host: "localhost"
+        port: 161
+        community: "public"
+    # - host: "router2.example.com"
+    #   port: 161
+    #   community: "private"
+
+  endpoint_collector_static:
+    enabled: true
+    port: 8082
+    services: []
+
+  endpoint_collector_ms365:
+    enabled: true
+    port: 8085
+    db_path: ./m365_endpoints.db
+    instance: Worldwide

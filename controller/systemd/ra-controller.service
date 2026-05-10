@@ -1,0 +1,34 @@
+[Unit]
+Description=RA Controller (backend + collectors)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ra-controller
+Group=ra-controller
+
+# Update this path to match your actual installation directory.
+WorkingDirectory=/opt/ra-controller
+
+# Starts backend + collectors. Frontend (Vite dev server) is omitted in production.
+ExecStart=/opt/ra-controller/server.sh backend neighbor endpoint
+
+# Optional overrides — copy env.example to /etc/ra-controller/env and edit.
+EnvironmentFile=-/etc/ra-controller/env
+
+# Disable ANSI colour codes; systemd/journald handles plain text better.
+Environment=NO_COLOR=1
+
+# Restart the whole service if it crashes.
+Restart=on-failure
+RestartSec=5
+
+# Send SIGTERM to the main process only.
+# server.sh's trap propagates the signal to all child processes.
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
