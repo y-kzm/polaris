@@ -1,0 +1,179 @@
+#!/usr/bin/env python3
+"""Polaris lab: start the lab, apply policies, and verify them end to end.
+
+Usage:
+    ./lab up                 build and start the lab, wait until it is ready
+    ./lab demo               run every scenario and verify each one
+    ./lab apply <scenario>   replace the policy with a scenario (see `scenarios`)
+    ./lab clear              remove every policy
+    ./lab verify             compare every host with the current policy
+    ./lab status             show the RA configurations on the routers
+    ./lab scenarios          list the scenarios
+    ./lab down               stop the lab and delete its state
+
+Only Python 3 and Docker are needed on the machine that runs this script.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from labkit import scenarios, verify  # noqa: E402
+from labkit.env import LabError, Lab  # noqa: E402
+
+LAB_DIR = Path(__file__).resolve().parent
+READY_TIMEOUT_S = 120
+
+
+def cmd_up(lab: Lab, _args: argparse.Namespace) -> int:
+    """Build and start the lab, then wait until it is usable."""
+    gora = Path(os.environ.get("GO_RA_DIR", LAB_DIR.parent / "agent" / "go-ra"))
+    if not gora.is_absolute():
+        gora = (LAB_DIR / gora).resolve()
+    if not (gora / "cmd" / "gorad").is_dir():
+        raise LabError(
+            f"go-ra source not found in {gora}.\n"
+            "  Run `git submodule update --init` in the repository root,\n"
+            "  or point GO_RA_DIR at a go-ra checkout."
+        )
+    print(f"go-ra source: {gora}")
+    if lab.kernel_has_rio():
+        print("RIO handling: kernel (accept_ra_rt_info_max_plen=128)")
+    else:
+        print("RIO handling: rio-shim on the hosts — this Docker kernel lacks CONFIG_IPV6_ROUTE_INFO")
+
+    lab.compose("up", "-d", "--build", "--remove-orphans", capture=False)
+
+    print("\nWaiting for the lab ...")
+    deadline = time.monotonic() + READY_TIMEOUT_S
+    for label, ready in (
+        ("controller API", lab.api_ready),
+        ("3 routers registered and reachable", lambda: lab.reachable_routers() == 3),
+        ("baseline RAs on every host", lambda: verify.baseline_ready(lab)),
+    ):
+        while not ready():
+            if time.monotonic() > deadline:
+                raise LabError(f"timed out waiting for: {label}\n  Try `./lab status` or `docker compose logs`.")
+            time.sleep(1)
+        print(f"  ok  {label}")
+
+    print(f"\nLab is ready.  Web UI: {lab.ui_url}")
+    print("Next:  ./lab demo      (or ./lab apply paper && ./lab verify)")
+    return 0
+
+
+def cmd_down(lab: Lab, _args: argparse.Namespace) -> int:
+    """Stop the lab and delete its containers, networks and state."""
+    lab.compose("down", "--volumes", "--remove-orphans", capture=False)
+    return 0
+
+
+def cmd_scenarios(_lab: Lab, _args: argparse.Namespace) -> int:
+    """List the built-in scenarios."""
+    for scenario in scenarios.SCENARIOS.values():
+        print(f"{scenario.name:<8} {scenario.summary}")
+        for group in scenario.groups:
+            print(f"           {group.describe()}")
+    return 0
+
+
+def cmd_apply(lab: Lab, args: argparse.Namespace) -> int:
+    """Replace the whole policy with a scenario and apply it."""
+    scenario = scenarios.get(args.scenario)
+    result = scenarios.apply(lab, scenario)
+    scenarios.print_result(scenario, result)
+    return 0 if result["success"] else 1
+
+
+def cmd_clear(lab: Lab, _args: argparse.Namespace) -> int:
+    """Remove every rule and group and apply the empty policy."""
+    result = scenarios.apply(lab, scenarios.EMPTY)
+    scenarios.print_result(scenarios.EMPTY, result)
+    return 0 if result["success"] else 1
+
+
+def cmd_verify(lab: Lab, _args: argparse.Namespace) -> int:
+    """Check every host against the policy stored in the controller."""
+    return 0 if verify.run(lab) else 1
+
+
+def cmd_status(lab: Lab, _args: argparse.Namespace) -> int:
+    """Show the RA configurations each router is running."""
+    for router in lab.api("GET", "/routers"):
+        print(f"{router['name']}  {router['address']}  policy source {router['policy_source_address'] or '-'}")
+        try:
+            configs = lab.api("GET", f"/routers/{router['id']}/interfaces")
+        except LabError as err:
+            print(f"    unreachable: {err}")
+            continue
+        for cfg in sorted(configs, key=lambda c: c.get("id", 0)):
+            clients = cfg.get("clients") or []
+            routes = [r["prefix"] for r in cfg.get("routes") or []]
+            target = f"{len(clients)} host(s)" if clients else "all hosts (multicast)"
+            print(
+                f"    config #{cfg.get('id', 0):<2} src {cfg.get('source_address') or 'primary':<28} "
+                f"prf {cfg.get('preference', 'medium'):<6} lifetime {cfg.get('router_lifetime_seconds', 0):>4}s  "
+                f"-> {target}" + (f"  RIO {', '.join(routes)}" if routes else "")
+            )
+    return 0
+
+
+def cmd_demo(lab: Lab, _args: argparse.Namespace) -> int:
+    """Apply each scenario in turn and verify the hosts after every step."""
+    steps = [scenarios.EMPTY, *scenarios.SCENARIOS.values(), scenarios.EMPTY]
+    failed: list[str] = []
+    for number, scenario in enumerate(steps, start=1):
+        print(f"\n━━ Step {number}/{len(steps)}: {scenario.name} — {scenario.summary}")
+        result = scenarios.apply(lab, scenario)
+        scenarios.print_result(scenario, result)
+        if not result["success"] or not verify.run(lab):
+            failed.append(f"step {number} ({scenario.name})")
+
+    print("\n" + ("DEMO FAILED: " + ", ".join(failed) if failed else "DEMO PASSED: every step matched its policy."))
+    return 1 if failed else 0
+
+
+COMMANDS = {
+    "up": cmd_up,
+    "down": cmd_down,
+    "demo": cmd_demo,
+    "apply": cmd_apply,
+    "clear": cmd_clear,
+    "verify": cmd_verify,
+    "status": cmd_status,
+    "scenarios": cmd_scenarios,
+}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="lab", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="command", required=True)
+    for name, func in COMMANDS.items():
+        p = sub.add_parser(name, help=(func.__doc__ or "").strip())
+        if name == "apply":
+            p.add_argument("scenario", choices=sorted(scenarios.SCENARIOS))
+    args = parser.parse_args()
+
+    lab = Lab(LAB_DIR, port=int(os.environ.get("LAB_PORT", "3000")))
+    try:
+        return COMMANDS[args.command](lab, args)
+    except LabError as err:
+        print(f"error: {err}", file=sys.stderr)
+        return 2
+    except subprocess.CalledProcessError as err:
+        print(f"error: `{' '.join(map(str, err.cmd))}` failed with exit code {err.returncode}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

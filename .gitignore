@@ -1,6 +1,10 @@
 # Claude Code session data
 .claude/
 
+# Python bytecode
+__pycache__/
+*.pyc
+
 # OS metadata
 .DS_Store
 Thumbs.db
