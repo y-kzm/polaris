@@ -104,6 +104,12 @@ func Reconcile(router *store.Router, running []*gorav1.InterfaceConfig, desired 
 			return nil, fmt.Errorf("policy source address %s is also the source of config #%d, which the controller does not manage; use a separate link-local address",
 				router.PolicySourceAddress, cfg.Id)
 		}
+		if router.PolicySourceAddress != "" && cfg.SourceAddress == "" {
+			// The agent then picks any link-local address of the interface,
+			// possibly the policy address itself.
+			return nil, fmt.Errorf("config #%d on %s has no sourceAddress, so it may be sent from the policy source address %s; set its sourceAddress to the baseline link-local address",
+				cfg.Id, cfg.Name, router.PolicySourceAddress)
+		}
 		if baselineSource == "" {
 			baselineSource = cfg.SourceAddress
 		}
@@ -122,11 +128,11 @@ func Reconcile(router *store.Router, running []*gorav1.InterfaceConfig, desired 
 			continue
 		}
 		c := configContent(cfg)
-		if cfg.SourceAddress != router.PolicySourceAddress {
-			if foreign[cfg.SourceAddress] == nil {
-				foreign[cfg.SourceAddress] = hostState{}
+		if src := canonicalSource(cfg.SourceAddress); src != canonicalSource(router.PolicySourceAddress) {
+			if foreign[src] == nil {
+				foreign[src] = hostState{}
 			}
-			mergeState(foreign[cfg.SourceAddress], cfg.Clients, c)
+			mergeState(foreign[src], cfg.Clients, c)
 			continue // never reused: it is deleted below
 		}
 		managedByKey[c.key()] = append(managedByKey[c.key()], cfg)
@@ -221,6 +227,15 @@ func unionClients(a, b []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// canonicalSource returns a source address in canonical form, so that two
+// spellings of one address compare equal. Other strings are returned as is.
+func canonicalSource(s string) string {
+	if h, ok := canonicalHost(s); ok {
+		return h
+	}
+	return s
 }
 
 func sameAddress(a, b string) bool {

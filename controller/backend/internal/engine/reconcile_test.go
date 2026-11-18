@@ -10,7 +10,8 @@ import (
 	"controller/backend/internal/store"
 )
 
-var baseline = &gorav1.InterfaceConfig{Id: 0, Name: "eth0", Preference: "medium", RouterLifetimeSeconds: 1800}
+var baseline = &gorav1.InterfaceConfig{Id: 0, Name: "eth0", Preference: "medium", RouterLifetimeSeconds: 1800,
+	SourceAddress: "fe80::b:a5e"}
 
 func msg(high bool, clients []string, routes ...string) Message {
 	if routes == nil {
@@ -65,7 +66,8 @@ func routePrefixes(cfg *gorav1.InterfaceConfig) []string {
 }
 
 func TestReconcileFreshRouter(t *testing.T) {
-	handMade := &gorav1.InterfaceConfig{Id: 1, Name: "eth0", Clients: []string{"fe80::99"}}
+	handMade := &gorav1.InterfaceConfig{Id: 1, Name: "eth0", Clients: []string{"fe80::99"},
+		SourceAddress: "fe80::b:a5e"}
 	desired := []Message{
 		msg(true, []string{"fe80::2"}),
 		msg(false, []string{"fe80::1"}, "2001:db8:1::/48"),
@@ -290,6 +292,35 @@ func TestReconcileRejectsBaselineAddressAsPolicySource(t *testing.T) {
 	_, err := Reconcile(&routerA, []*gorav1.InterfaceConfig{explicit}, nil)
 	if err == nil || !strings.Contains(err.Error(), "use a separate link-local address") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// Without an explicit source the agent may send the baseline RA from the
+// policy address, so the two cannot be shown to differ.
+func TestReconcileRejectsBaselineWithoutSourceAddress(t *testing.T) {
+	implicit := &gorav1.InterfaceConfig{Id: 0, Name: "eth0", Preference: "medium", RouterLifetimeSeconds: 1800}
+
+	_, err := Reconcile(&routerA, []*gorav1.InterfaceConfig{implicit}, nil)
+	if err == nil || !strings.Contains(err.Error(), "has no sourceAddress") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// A managed config whose source is the policy address in another spelling is
+// the router's own state, not state left behind at an old address.
+func TestReconcileComparesSourceAddressesCanonically(t *testing.T) {
+	desired := []Message{msg(true, []string{"fe80::1"}, "2001:db8:1::/48")}
+	start := []*gorav1.InterfaceConfig{baseline}
+	state := running(start, mustReconcile(t, &routerA, start, desired))
+	for _, cfg := range state {
+		if isManaged(cfg) {
+			cfg.SourceAddress = "FE80:0::FACE:A"
+		}
+	}
+
+	plan := mustReconcile(t, &routerA, state, desired)
+	if len(plan.Withdraw) != 0 || len(plan.Delete) != 0 || len(plan.Add) != 0 {
+		t.Fatalf("add=%d delete=%d withdraw=%+v; want none", len(plan.Add), len(plan.Delete), plan.Withdraw)
 	}
 }
 
