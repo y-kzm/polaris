@@ -10,7 +10,7 @@ type RouterStore struct{ db *sql.DB }
 func NewRouterStore(db *sql.DB) *RouterStore { return &RouterStore{db} }
 
 func (s *RouterStore) List() ([]Router, error) {
-	rows, err := s.db.Query(`SELECT id,name,address,interface,status,ra_interval_ms,current_hop_limit,managed,other,router_lifetime_s,reachable_time_ms,retransmit_time_ms,created_at,updated_at FROM routers ORDER BY created_at`)
+	rows, err := s.db.Query(`SELECT id,name,address,interface,policy_source_address,status,ra_interval_ms,current_hop_limit,managed,other,router_lifetime_s,reachable_time_ms,retransmit_time_ms,created_at,updated_at FROM routers ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -19,7 +19,7 @@ func (s *RouterStore) List() ([]Router, error) {
 	for rows.Next() {
 		var r Router
 		var managed, other int
-		if err := rows.Scan(&r.ID, &r.Name, &r.Address, &r.Interface, &r.Status,
+		if err := rows.Scan(&r.ID, &r.Name, &r.Address, &r.Interface, &r.PolicySourceAddress, &r.Status,
 			&r.RAIntervalMs, &r.CurrentHopLimit, &managed, &other,
 			&r.RouterLifetimeS, &r.ReachableTimeMs, &r.RetransmitTimeMs,
 			&r.CreatedAt, &r.UpdatedAt); err != nil {
@@ -38,8 +38,8 @@ func (s *RouterStore) List() ([]Router, error) {
 func (s *RouterStore) Get(id string) (*Router, error) {
 	var r Router
 	var managed, other int
-	err := s.db.QueryRow(`SELECT id,name,address,interface,status,ra_interval_ms,current_hop_limit,managed,other,router_lifetime_s,reachable_time_ms,retransmit_time_ms,created_at,updated_at FROM routers WHERE id=?`, id).
-		Scan(&r.ID, &r.Name, &r.Address, &r.Interface, &r.Status,
+	err := s.db.QueryRow(`SELECT id,name,address,interface,policy_source_address,status,ra_interval_ms,current_hop_limit,managed,other,router_lifetime_s,reachable_time_ms,retransmit_time_ms,created_at,updated_at FROM routers WHERE id=?`, id).
+		Scan(&r.ID, &r.Name, &r.Address, &r.Interface, &r.PolicySourceAddress, &r.Status,
 			&r.RAIntervalMs, &r.CurrentHopLimit, &managed, &other,
 			&r.RouterLifetimeS, &r.ReachableTimeMs, &r.RetransmitTimeMs,
 			&r.CreatedAt, &r.UpdatedAt)
@@ -55,16 +55,16 @@ func (s *RouterStore) Get(id string) (*Router, error) {
 }
 
 func (s *RouterStore) Create(r *Router) error {
-	_, err := s.db.Exec(`INSERT INTO routers(id,name,address,interface,status,ra_interval_ms,current_hop_limit,managed,other,router_lifetime_s,reachable_time_ms,retransmit_time_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		r.ID, r.Name, r.Address, r.Interface, r.Status,
+	_, err := s.db.Exec(`INSERT INTO routers(id,name,address,interface,policy_source_address,status,ra_interval_ms,current_hop_limit,managed,other,router_lifetime_s,reachable_time_ms,retransmit_time_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		r.ID, r.Name, r.Address, r.Interface, r.PolicySourceAddress, r.Status,
 		r.RAIntervalMs, r.CurrentHopLimit, boolInt(r.Managed), boolInt(r.Other),
 		r.RouterLifetimeS, r.ReachableTimeMs, r.RetransmitTimeMs)
 	return err
 }
 
 func (s *RouterStore) Update(r *Router) error {
-	res, err := s.db.Exec(`UPDATE routers SET name=?,address=?,interface=?,status=?,ra_interval_ms=?,current_hop_limit=?,managed=?,other=?,router_lifetime_s=?,reachable_time_ms=?,retransmit_time_ms=?,updated_at=datetime('now') WHERE id=?`,
-		r.Name, r.Address, r.Interface, r.Status,
+	res, err := s.db.Exec(`UPDATE routers SET name=?,address=?,interface=?,policy_source_address=?,status=?,ra_interval_ms=?,current_hop_limit=?,managed=?,other=?,router_lifetime_s=?,reachable_time_ms=?,retransmit_time_ms=?,updated_at=datetime('now') WHERE id=?`,
+		r.Name, r.Address, r.Interface, r.PolicySourceAddress, r.Status,
 		r.RAIntervalMs, r.CurrentHopLimit, boolInt(r.Managed), boolInt(r.Other),
 		r.RouterLifetimeS, r.ReachableTimeMs, r.RetransmitTimeMs, r.ID)
 	if err != nil {

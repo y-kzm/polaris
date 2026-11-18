@@ -3,7 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/netip"
+	"strings"
 	"sync"
 
 	"controller/backend/internal/gora"
@@ -105,21 +108,17 @@ func (h *Handler) createRouter(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name and address are required")
 		return
 	}
+	if err := normalizePolicySourceAddress(&router); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if router.ID == "" {
 		router.ID = uuid.New().String()
 	}
 	if router.Status == "" {
 		router.Status = "active"
 	}
-	if router.RAIntervalMs == 0 {
-		router.RAIntervalMs = 3000
-	}
-	if router.CurrentHopLimit == 0 {
-		router.CurrentHopLimit = 64
-	}
-	if router.RouterLifetimeS == 0 {
-		router.RouterLifetimeS = 1800
-	}
+	applyRouterDefaults(&router)
 	if err := h.routers.Create(&router); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -141,12 +140,50 @@ func (h *Handler) updateRouter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	update.ID = id
+	if update.Status == "" {
+		update.Status = existing.Status
+	}
+	applyRouterDefaults(&update)
+	if err := normalizePolicySourceAddress(&update); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := h.routers.Update(&update); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	updated, _ := h.routers.Get(id)
 	writeJSON(w, http.StatusOK, updated)
+}
+
+// applyRouterDefaults fills in the RA parameters the agent requires. A zero
+// Router Lifetime in particular cannot be combined with a high preference.
+func applyRouterDefaults(router *store.Router) {
+	if router.RAIntervalMs == 0 {
+		router.RAIntervalMs = 3000
+	}
+	if router.CurrentHopLimit == 0 {
+		router.CurrentHopLimit = 64
+	}
+	if router.RouterLifetimeS == 0 {
+		router.RouterLifetimeS = 1800
+	}
+}
+
+// normalizePolicySourceAddress validates the optional policy source address
+// and stores it in canonical form.
+func normalizePolicySourceAddress(router *store.Router) error {
+	s := strings.TrimSpace(router.PolicySourceAddress)
+	if s == "" {
+		router.PolicySourceAddress = ""
+		return nil
+	}
+	addr, err := netip.ParseAddr(s)
+	if err != nil || !addr.Is6() || !addr.IsLinkLocalUnicast() {
+		return fmt.Errorf("policy_source_address must be a link-local IPv6 address (fe80::/10)")
+	}
+	router.PolicySourceAddress = addr.WithZone("").String()
+	return nil
 }
 
 func (h *Handler) deleteRouter(w http.ResponseWriter, r *http.Request) {

@@ -3,20 +3,25 @@ package store
 import "encoding/json"
 
 type Router struct {
-	ID               string `json:"id"`
-	Name             string `json:"name"`
-	Address          string `json:"address"`
-	Interface        string `json:"interface"`
-	Status           string `json:"status"`
-	RAIntervalMs     int32  `json:"ra_interval_milliseconds"`
-	CurrentHopLimit  int32  `json:"current_hop_limit"`
-	Managed          bool   `json:"managed"`
-	Other            bool   `json:"other"`
-	RouterLifetimeS  int32  `json:"router_lifetime_seconds"`
-	ReachableTimeMs  int32  `json:"reachable_time_milliseconds"`
-	RetransmitTimeMs int32  `json:"retransmit_time_milliseconds"`
-	CreatedAt        string `json:"created_at"`
-	UpdatedAt        string `json:"updated_at"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Address   string `json:"address"`
+	Interface string `json:"interface"`
+	// PolicySourceAddress is the link-local address the router uses as the
+	// source of its policy RAs. It must differ from the address of the
+	// baseline RA and be assigned to Interface. Empty means the policy RAs
+	// share the baseline address (legacy behavior).
+	PolicySourceAddress string `json:"policy_source_address"`
+	Status              string `json:"status"`
+	RAIntervalMs        int32  `json:"ra_interval_milliseconds"`
+	CurrentHopLimit     int32  `json:"current_hop_limit"`
+	Managed             bool   `json:"managed"`
+	Other               bool   `json:"other"`
+	RouterLifetimeS     int32  `json:"router_lifetime_seconds"`
+	ReachableTimeMs     int32  `json:"reachable_time_milliseconds"`
+	RetransmitTimeMs    int32  `json:"retransmit_time_milliseconds"`
+	CreatedAt           string `json:"created_at"`
+	UpdatedAt           string `json:"updated_at"`
 }
 
 type Entry struct {

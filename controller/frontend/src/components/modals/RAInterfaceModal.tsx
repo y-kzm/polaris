@@ -72,6 +72,7 @@ export default function RAInterfaceModal({ routerName, interfaces, onClose }: RA
                 <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
                   <Row label="RA Interval"       value={`${iface.ra_interval_milliseconds} ms`} />
                   <Row label="Router Lifetime"   value={`${iface.router_lifetime_seconds} s`} />
+                  <Row label="Source Address"    value={iface.source_address || 'primary link-local'} highlight={!!iface.source_address} />
                   <Row label="Hop Limit"         value={String(iface.current_hop_limit)} />
                   <Row label="Reachable Time"    value={`${iface.reachable_time_milliseconds} ms`} />
                   <Row label="Retransmit Time"   value={`${iface.retransmit_time_milliseconds} ms`} />

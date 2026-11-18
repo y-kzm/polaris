@@ -36,6 +36,8 @@ export interface RAInterfaceConfig {
   reachable_time_milliseconds: number;
   retransmit_time_milliseconds: number;
   disable_rs_reply: boolean;
+  source_address?: string;
+  description?: string;
   prefixes: RAPrefix[];
   routes: RARoute[];
   clients: string[];
@@ -54,6 +56,8 @@ export interface RouterConfig {
   name: string;
   address: string;
   interface: string;
+  /** Link-local source address of the policy RAs; empty = same as the baseline RA. */
+  policy_source_address: string;
   ra_interval_milliseconds: number;
   current_hop_limit: number;
   managed: boolean;

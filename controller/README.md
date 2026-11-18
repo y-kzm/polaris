@@ -58,7 +58,7 @@ Mounted under `/api`:
 | GET    | `/neighbors` | List discovered neighbors |
 | POST   | `/neighbors/refresh` | Force an immediate poll of all collectors |
 | GET    | `/neighbor-sources` | List configured collector source labels |
-| POST   | `/policy/apply` | Compile rules×groups into per-router gRPC pushes |
+| POST   | `/policy/apply` | Compile rules×groups, then reconcile every router in two phases (advertise new, withdraw old). `?dry_run=1` only reports the changes |
 | GET    | `/fqdn/services` | List endpoint-collector services (FQDN-based rules) |
 | GET    | `/fqdn/services/{name}/endpoints` | Resolve a service to IP prefixes |
 

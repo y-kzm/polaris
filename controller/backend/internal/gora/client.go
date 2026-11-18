@@ -71,19 +71,23 @@ func (c *Client) UpdateInterface(ctx context.Context, cfg *gorav1.InterfaceConfi
 	return err
 }
 
-func (c *Client) DeleteInterface(ctx context.Context, id int32) error {
+// DeleteInterface removes an RA configuration. With skipGoodbye the agent
+// does not send a goodbye RA; the caller withdraws the state itself.
+func (c *Client) DeleteInterface(ctx context.Context, id int32, skipGoodbye bool) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	_, err := c.svc.DeleteInterface(ctx, &gorav1.DeleteInterfaceRequest{Id: id})
+	_, err := c.svc.DeleteInterface(ctx, &gorav1.DeleteInterfaceRequest{Id: id, SkipGoodbye: skipGoodbye})
 	return err
 }
 
-// Upsert calls UpdateInterface; if that fails, falls back to AddInterface.
-func (c *Client) Upsert(ctx context.Context, cfg *gorav1.InterfaceConfig) error {
-	if err := c.UpdateInterface(ctx, cfg); err == nil {
-		return nil
-	}
-	return c.AddInterface(ctx, cfg)
+// SendRA makes the agent send one RA built from cfg to its clients without
+// installing it. The prefixes in withdrawnRoutes are advertised with a zero
+// lifetime.
+func (c *Client) SendRA(ctx context.Context, cfg *gorav1.InterfaceConfig, withdrawnRoutes []string) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, err := c.svc.SendRA(ctx, &gorav1.SendRARequest{Interface: cfg, WithdrawnRoutes: withdrawnRoutes})
+	return err
 }
 
 func formatTarget(address string, port int) string {

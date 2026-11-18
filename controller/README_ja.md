@@ -59,7 +59,7 @@ IPv6 ルータ広告デーモン [go-ra (fork版)](https://github.com/y-kzm/go-r
 | GET    | `/neighbors` | 検出されたネイバー一覧 |
 | POST   | `/neighbors/refresh` | 全 collector の即時ポーリングを強制 |
 | GET    | `/neighbor-sources` | 設定済み collector のソースラベル一覧 |
-| POST   | `/policy/apply` | ルール × グループをコンパイルし各ルータへ gRPC push |
+| POST   | `/policy/apply` | ルール×グループをコンパイルし、全ルータを 2 段階（新しい広告 → 古い広告の取り下げ）で更新する。`?dry_run=1` は差分の報告のみ |
 | GET    | `/fqdn/services` | endpoint-collector のサービス一覧（FQDN ベースのルール用）|
 | GET    | `/fqdn/services/{name}/endpoints` | サービス名から IP プレフィクスを解決 |
 
