@@ -17,6 +17,14 @@ WAN_PREFIX="${WAN_PREFIX:-2001:2f8:1c0:7040::/64}"
 LAN_PREFIX="${LAN_PREFIX:-2001:cafe:dead:beef::/64}"
 WAN_IF="${WAN_IF:-enp2s0}"
 
+# Policy RA source address — a second link-local address on the LAN-facing
+# interface, used only for the policy RAs the controller requests. Hosts keep
+# one default-router entry per RA source address, so sending policy RAs from
+# the baseline address would make the two overwrite each other.
+# Leave both empty to skip (policy RAs then share the baseline address).
+LAN_IF="${LAN_IF:-}"
+POLICY_LL="${POLICY_LL:-}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "=================================="
@@ -27,6 +35,8 @@ echo "gRPC address      : $GRPC_ADDR"
 echo "WAN prefix        : $WAN_PREFIX"
 echo "LAN prefix        : $LAN_PREFIX"
 echo "WAN interface     : $WAN_IF"
+echo "LAN interface     : ${LAN_IF:-(not set)}"
+echo "Policy RA source  : ${POLICY_LL:-(not set — shares the baseline address)}"
 echo
 
 if [[ $EUID -ne 0 ]]; then
@@ -141,6 +151,33 @@ fi
 if [[ "$GRPC_ADDR" != "localhost:50051" ]]; then
   sed -i "s|localhost:50051|$GRPC_ADDR|g" "/etc/systemd/system/$SERVICE_NAME.service"
 fi
+
+# --- Policy RA source address ---
+# Assigned by a drop-in before every start of the service, so it survives
+# reboots. "+" runs the command as root regardless of the service user.
+DROPIN_DIR="/etc/systemd/system/$SERVICE_NAME.service.d"
+if [[ -n "$LAN_IF" && -n "$POLICY_LL" ]]; then
+  if [[ "$POLICY_LL" != fe80:* ]]; then
+    echo "Error: POLICY_LL must be a link-local address (fe80::/10), got '$POLICY_LL'." >&2
+    exit 1
+  fi
+  mkdir -p "$DROPIN_DIR"
+  cat > "$DROPIN_DIR/policy-address.conf" << DROPIN
+[Service]
+ExecStartPre=+$(command -v ip) -6 addr replace $POLICY_LL/64 dev $LAN_IF nodad
+DROPIN
+  echo "Policy RA source address $POLICY_LL will be assigned to $LAN_IF on every start."
+  BASE_LL=$(ip -6 -o addr show dev "$LAN_IF" scope link | awk '{sub("/.*", "", $4); print $4}' | grep -vix "$POLICY_LL" | head -1)
+  echo "  1. In $INSTALL_DIR/config.yaml, set on the baseline instance:"
+  echo "       sourceAddress: ${BASE_LL:-<primary link-local of $LAN_IF>}"
+  echo "  2. In the RA controller, set this router's policy source address to $POLICY_LL."
+elif [[ -n "$LAN_IF" || -n "$POLICY_LL" ]]; then
+  echo "Error: set both LAN_IF and POLICY_LL, or neither." >&2
+  exit 1
+else
+  rm -f "$DROPIN_DIR/policy-address.conf"
+fi
+echo
 
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME"
