@@ -50,19 +50,20 @@ Polaris は **ISP 選択の起点を「送信元アドレス選択」から「�
 
 ## Polaris の動作モード
 
-### 1. Docker ラボ
+### 1. Docker lab
 
-ルータ 3 台、ホスト 10 台、コントローラ、上流 Web サーバを含む再現可能な完全
-環境。
+ルータ 3 台（それぞれ別の ISP）、ホスト 10 台、コントローラ、インターネット役の
+Web サーバから成る、再現可能な環境です。
 
 ```bash
 git clone --recurse-submodules <this-repo>
-cd polaris
-docker compose -f laboratory/docker-compose.yaml up --build
+cd polaris/laboratory
+./lab up        # ビルドして起動し、準備完了まで待つ
+./lab demo      # 全シナリオを適用し、経路表と出口 ISP を検証する
 # http://localhost:3000 を開く
 ```
 
-デモ手順、検証スクリプト、Docker 固有の注意点については
+シナリオ、検証の内容、RIO 非対応カーネルでの注意は
 [`laboratory/README_ja.md`](laboratory/README_ja.md) を参照してください。
 
 ### 2. コントローラ単独実行（実機ルータでのテスト用）
@@ -104,17 +105,48 @@ sudo WAN_PREFIX=2001:db8:wan::/64  \
 | **RIO** | Route Information Option (RFC 4191) — 特定プレフィクス向けの経路をインストール |
 | **NPTv6** | プレフィクス 1 対 1 変換 (RFC 6296) — ホストプライバシーを保ち、Ingress filter を回避 |
 
+### ルータごとに 2 つの RA 送信元アドレス
+
+ホストは RA の送信元アドレスごとにデフォルトルータのエントリを 1 つ持ち、
+そのアドレスから RA を受けるたびに優先度と lifetime を上書きします。
+そこで Polaris は、各サイト出口ルータの内部インターフェースに
+リンクローカルアドレスを 2 つ持たせます。
+
+- **ベースライン用アドレス**: 通常の RA（プレフィクス、優先度 medium）を全ホストへ送る。
+- **ポリシー用アドレス**: ポリシー RA だけを、対象ホストへユニキャストで送る。
+
+両者は互いを上書きしません。ポリシーを取り下げる（ポリシー用アドレスから
+lifetime 0 を送る）と、ホストはすぐにベースラインへ戻ります。
+ポリシー用アドレスはコントローラでルータごとに設定します（`policy_source_address`）。
+ルータへの割り当て方法は [`agent/README_ja.md`](agent/README_ja.md) を参照してください。
+
 ### Policy から RA への変換
 
-ルータ *n* を対象とする各ポリシーに対し、コントローラはルールごとに
-`InterfaceConfig` を 1 つ生成します:
+コントローラは、論文の Algorithm 1 のとおりにポリシーをコンパイルします。
 
-- 宛先集合に `::/0` が含まれる → `preference = high`（DRP）を設定し、
-  *n* を対象クライアントの優先デフォルトゲートウェイにする
-- それ以外 → 各プレフィクスを `preference = medium` の `RIO` として
-  送出し、特定プレフィクス向けの経路を *n* 経由でインストール
-- 結果 RA を **ユニキャスト** で各メンバーホストへ送信
+1. ルータ *n* とホスト *h* の組ごとに、*h* に適用され *n* を指定するルールを
+   すべて統合する。`::/0` 以外のプレフィクスは `RIO` になる。`::/0` は
+   `preference = high`（DRP）を設定し、*n* を *h* の優先デフォルトルータにする。
+2. 同じルータから同じ内容を受け取るホストを、1 つの `InterfaceConfig` にまとめる。
+   ホストが受け取るポリシー RA は、ルータごとに最大 1 通になる。
+
+`::/0` を含まないポリシー RA の Router Lifetime は 0 で、経路だけを運びます。
+
+### ポリシーの適用
+
+`POST /api/policy/apply` は、コンパイル結果と各ルータで動いている設定を比較し、
+差分を全ルータに対して 2 段階で適用します。
+
+1. **Make**: 設定を追加・更新する。新しい RA はすぐに送られる。
+2. **Break**: 不要になった設定を削除し、経路または優先デフォルトルータを失う
+   ホストへ取り下げ RA（lifetime 0）を送る。
+
+このため、あるルータから別のルータへ移るホストは、一時的に両方を持つことはあっても、
+どちらも持たない状態にはなりません。到達可能なルータで Make が失敗した場合、
+Break は実行せず、古いポリシーをそのまま残します。動作中の状態はルータから
+読み取るので、コントローラは適用履歴を持ちません。ルールを削除して再度適用すれば、
+ルータからも消えます。`POST /api/policy/apply?dry_run=1` は、変更せずに差分だけを返します。
 
 実装は
-[`controller/backend/internal/engine/engine.go`](controller/backend/internal/engine/engine.go)
-にあります。
+[`controller/backend/internal/engine/`](controller/backend/internal/engine/) にあります:
+`compile.go`（Algorithm 1）、`reconcile.go`（差分と取り下げ）、`engine.go`（2 段階の適用）。
