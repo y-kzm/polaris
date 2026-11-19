@@ -34,3 +34,7 @@ go.work.sum
 
 # Frontend build output (also covered by controller/frontend/.gitignore)
 dist/
+
+# experiments
+experiments/results/
+experiments/.state-*.json

@@ -1,0 +1,58 @@
+# Single mode: the whole site on one Linux machine, as network namespaces.
+# Run as root:  sudo ./exp setup && sudo ./exp run all
+mode = "single"
+workdir = "/var/tmp/polaris-exp"
+# go_ra_dir = "/path/to/go-ra"      # default: ../agent/go-ra (the submodule)
+
+[site]
+hosts = 200                          # emulated end hosts
+lan_prefix = "fd00:1::/64"           # site prefix; each router translates it (NPTv6)
+
+[policy]
+g1_hosts = 50                        # G1 = host 1..50 (D1 via Router(a)), G2 = the rest (::/0 via Router(b))
+default_dst = "2001:db8::1"          # a destination outside D1
+# d1 = ["2603:1027::/48", ...]       # default: the seven Microsoft Teams prefixes of the paper
+
+[ra]                                 # values of the paper
+baseline_interval_ms = 400000
+policy_interval_ms = 40000
+router_lifetime_s = 1800
+
+[upstream]
+kind = "emulated"                    # ISP-A, ISP-B and a server are created inside the site
+
+[[router]]                           # Router(a) → ISP-A
+isp_prefix = "2001:db8:a::/64"
+
+[[router]]                           # Router(b) → ISP-B
+isp_prefix = "2001:db8:b::/64"
+
+# ── per-experiment settings (all optional; these are the defaults) ───────────
+[experiments.load]
+baseline_interval_ms = 40000         # shorter than the paper's, so that a 2-minute capture is enough
+policy_interval_ms = 4000
+window_s = 120
+
+[experiments.spread]
+policy_interval_ms = 2000
+rounds = 20
+conditions = [[50, 7], [150, 0], [50, 0], [100, 0], [200, 0], [50, 1], [50, 16], [50, 32]]   # [hosts, RIOs]
+
+[experiments.overwrite]
+baseline_interval_ms = 20000
+policy_interval_ms = 8000
+duration_s = 120
+hosts = 10
+
+[experiments.transition]
+ping_interval_s = 0.1
+
+[experiments.failover]
+scenarios = ["withdraw", "power_loss", "daemon_crash", "withdraw_lost"]
+trials = 10                          # withdraw, power_loss
+bound_trials = 5                     # daemon_crash, withdraw_lost (each lasts about bound_lifetime_s)
+ping_interval_s = 0.1
+power_loss_window_s = 75             # must cover neighbour unreachability detection
+bound_lifetime_s = 60                # Router Lifetime used for daemon_crash and withdraw_lost
+bound_interval_ms = 20000
+crash_to_fault_s = 5

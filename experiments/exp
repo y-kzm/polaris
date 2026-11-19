@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""Run the Polaris experiments.
+
+    sudo ./exp setup                 build the site (namespaces, routers, controller, hosts)
+    sudo ./exp run all               run every experiment
+    sudo ./exp run verify failover   run selected experiments
+    sudo ./exp list                  list the experiments
+    sudo ./exp status                show whether the site is running
+    sudo ./exp teardown              remove everything setup created
+
+Use -c to select a configuration (default: config/single.toml).
+Results are written to results/<experiment>_<timestamp>/.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import time
+from pathlib import Path
+
+if sys.version_info < (3, 11):
+    sys.exit("exp needs Python 3.11 or newer")
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+from expkit import ExpError, Site, load  # noqa: E402
+from expkit import provision  # noqa: E402
+from expkit.experiments import EXPERIMENTS  # noqa: E402
+from expkit.report import Run  # noqa: E402
+
+
+def cmd_setup(args: argparse.Namespace) -> int:
+    cfg = load(args.config)
+    print(f"Setting up ({cfg.mode} mode, {cfg.hosts} hosts, {cfg.upstream} upstream)")
+    started = time.time()
+    provision.setup(cfg, rebuild=args.rebuild)
+    print(f"Ready after {time.time() - started:.0f} s.  Next: ./exp run all")
+    return 0
+
+
+def cmd_teardown(args: argparse.Namespace) -> int:
+    provision.teardown(load(args.config))
+    print("Removed.")
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    cfg = load(args.config)
+    site = Site(cfg)
+    if not site.ready():
+        print("The site is not running. Run ./exp setup.")
+        return 1
+    site.connect()
+    print(f"{cfg.mode} mode, {cfg.hosts} hosts, RA parameters: {site.ra}")
+    for router in site.routers.values():
+        print(f"  {router.cfg.name}: baseline {router.base_ll}, policy {router.cfg.policy_ll}, "
+              f"{router.cfg.isp} {router.cfg.isp_prefix}")
+    return 0
+
+
+def cmd_list(_args: argparse.Namespace) -> int:
+    for name, module in EXPERIMENTS.items():
+        print(f"  {name:<11} {module.TITLE}")
+    return 0
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    names = list(EXPERIMENTS) if "all" in args.experiments else args.experiments
+    unknown = [n for n in names if n not in EXPERIMENTS]
+    if unknown:
+        raise ExpError(f"unknown experiment(s): {', '.join(unknown)} (see ./exp list)")
+    cfg = load(args.config)
+    site = Site(cfg)
+    site.connect()
+    outcomes = {}
+    for name in names:
+        print(f"\n━━ {name}: {EXPERIMENTS[name].TITLE}")
+        out = Run(cfg, site, name)
+        started = time.time()
+        try:
+            EXPERIMENTS[name].run(cfg, site, out)
+        except ExpError as err:
+            out.fail(str(err))
+        out.say(f"Duration: {time.time() - started:.0f} s")
+        out.close()
+        outcomes[name] = out.ok
+    if len(outcomes) > 1:
+        print("\nSummary: " + ", ".join(f"{n} {'PASS' if ok else 'FAIL'}" for n, ok in outcomes.items()))
+    return 0 if all(outcomes.values()) else 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("-c", "--config", type=Path, default=HERE / "config" / "single.toml")
+    sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("setup", help="build the site")
+    p.add_argument("--rebuild", action="store_true", help="rebuild the binaries even if they exist")
+    p.set_defaults(func=cmd_setup)
+    sub.add_parser("teardown", help="remove the site").set_defaults(func=cmd_teardown)
+    sub.add_parser("status", help="show the site state").set_defaults(func=cmd_status)
+    sub.add_parser("list", help="list the experiments").set_defaults(func=cmd_list)
+    p = sub.add_parser("run", help="run experiments")
+    p.add_argument("experiments", nargs="+", metavar="EXPERIMENT", help="experiment names, or 'all'")
+    p.set_defaults(func=cmd_run)
+    args = parser.parse_args()
+    try:
+        return args.func(args)
+    except ExpError as err:
+        print(f"error: {err}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\ninterrupted", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

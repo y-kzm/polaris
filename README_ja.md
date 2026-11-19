@@ -44,6 +44,7 @@ Polaris は **ISP 選択の起点を「送信元アドレス選択」から「�
 | [`agent/go-ra/`](agent/go-ra/) | go-ra ソース — git submodule、[YutaroHayakawa/go-ra](https://github.com/YutaroHayakawa/go-ra) からのフォーク |
 | [`controller/`](controller/) | RA Controller — Go バックエンド、React/Vite フロントエンド、Neighbor / Endpoint Collector モジュール |
 | [`laboratory/`](laboratory/) | 自己完結型 Docker Compose ラボ（ルータ 3 台、ホスト 10 台、コントローラ、Web サーバ）|
+| [`experiments/`](experiments/) | 実験環境（ルータ 2 台、ISP 2 つ、ホスト 200 台）を構築し、論文の実験を実施するスクリプト |
 
 各サブディレクトリには専用の README があります。ビルド・デプロイの詳細は
 そちらを参照してください。

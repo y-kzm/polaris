@@ -43,6 +43,7 @@ unicast RAs to the targeted hosts, modifying their default gateway
 | [`agent/go-ra/`](agent/go-ra/) | go-ra source — git submodule, forked from [YutaroHayakawa/go-ra](https://github.com/YutaroHayakawa/go-ra) |
 | [`controller/`](controller/) | RA Controller — Go backend, React/Vite frontend, neighbor & endpoint collector modules |
 | [`laboratory/`](laboratory/) | Self-contained Docker Compose lab (3 routers, 10 hosts, controller, web server) |
+| [`experiments/`](experiments/) | Scripts that build the experiment site (2 routers, 2 ISPs, 200 hosts) and run the experiments of the paper |
 
 Each subdirectory has its own README — see those for build & deployment
 details.
