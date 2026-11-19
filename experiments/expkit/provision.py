@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import time
 
 from . import topology as topo
@@ -40,6 +41,22 @@ def install_packages(machine: Machine, packages: dict[str, str]) -> None:
     )
 
 
+def secure_workdir(machine: Machine, workdir: str) -> None:
+    """Create the working directory for root only, and refuse one somebody else controls.
+
+    Root runs the binaries and pid files kept there. Under a world-writable
+    parent such as /var/tmp another user could create the directory first.
+    """
+    machine.sh(
+        f"d={shlex.quote(workdir)}\n"
+        "[ ! -L \"$d\" ] || { echo \"$d is a symbolic link\" >&2; exit 1; }\n"
+        "mkdir -p -m 0700 \"$d\"\n"
+        "[ \"$(stat -c %u \"$d\")\" = 0 ] || "
+        "{ echo \"$d is not owned by root: remove it or choose another workdir\" >&2; exit 1; }\n"
+        "chmod 0700 \"$d\""
+    )
+
+
 def build(machine: Machine, cfg: Config, target: str, rebuild: bool) -> None:
     """Build one binary on the machine that runs it: gorad, controller or rio-shim.
 
@@ -74,6 +91,8 @@ def setup(cfg: Config, rebuild: bool = False) -> Site:
     site = Site(cfg)
     if cfg.mode == "single" and os.geteuid() != 0:
         raise ExpError("single mode creates network namespaces: run as root (sudo ./exp setup)")
+    for machine in site.machines():
+        secure_workdir(machine, cfg.workdir)
     teardown(cfg, quiet=True)
     site = Site(cfg)  # teardown dropped the saved state
 
