@@ -104,11 +104,11 @@ func Reconcile(router *store.Router, running []*gorav1.InterfaceConfig, desired 
 			return nil, fmt.Errorf("policy source address %s is also the source of config #%d, which the controller does not manage; use a separate link-local address",
 				router.PolicySourceAddress, cfg.Id)
 		}
-		if router.PolicySourceAddress != "" && cfg.SourceAddress == "" {
+		if _, ok := canonicalHost(cfg.SourceAddress); router.PolicySourceAddress != "" && !ok {
 			// The agent then picks any link-local address of the interface,
 			// possibly the policy address itself.
-			return nil, fmt.Errorf("config #%d on %s has no sourceAddress, so it may be sent from the policy source address %s; set its sourceAddress to the baseline link-local address",
-				cfg.Id, cfg.Name, router.PolicySourceAddress)
+			return nil, fmt.Errorf("config #%d on %s has no usable sourceAddress (%q), so it may be sent from the policy source address %s; set its sourceAddress to the baseline link-local address",
+				cfg.Id, cfg.Name, cfg.SourceAddress, router.PolicySourceAddress)
 		}
 		if baselineSource == "" {
 			baselineSource = cfg.SourceAddress

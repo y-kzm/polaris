@@ -301,7 +301,7 @@ func TestReconcileRejectsBaselineWithoutSourceAddress(t *testing.T) {
 	implicit := &gorav1.InterfaceConfig{Id: 0, Name: "eth0", Preference: "medium", RouterLifetimeSeconds: 1800}
 
 	_, err := Reconcile(&routerA, []*gorav1.InterfaceConfig{implicit}, nil)
-	if err == nil || !strings.Contains(err.Error(), "has no sourceAddress") {
+	if err == nil || !strings.Contains(err.Error(), "has no usable sourceAddress") {
 		t.Fatalf("err = %v", err)
 	}
 }
