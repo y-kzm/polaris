@@ -1,96 +1,87 @@
-# Polaris Lab Environment
+# Polaris lab
 #
-# A compact, self-contained Polaris deployment with 10 end-hosts, three
-# site-exit routers, the controller, and an upstream web server.
+# Three site-exit routers (one ISP each), ten end hosts, the RA controller,
+# and a web server that plays the Internet. Use the ./lab command in this
+# directory instead of calling docker compose directly:
 #
-# Three-segment topology:
+#   ./lab up       build and start, wait until ready
+#   ./lab demo     apply policies and verify them end to end
+#   ./lab down     stop and remove everything
 #
-#   internal-net  fc00:cafe:dead:beef::/64   end-hosts ↔ routers (RA delivery)
-#   mgmt-net      fd00::/64                  controller ↔ routers (gRPC)
-#   server-net    fd10::/64                  routers ↔ web-server (forwarding)
+#   internal  fc00:cafe:dead:beef::/64   hosts <-> routers (RAs)
+#   upstream  fd10::/64                  routers <-> web server
+#   mgmt      fd00::/64                  controller <-> routers (gRPC)
 #
-# Each router (router1..3) is connected to all three networks.  Their
-# IPv6 addresses on the internal segment are fc00:cafe:dead:beef::ff01/02/03
-# and they self-register with the controller on startup.
-#
-# Quick start (from repo root):
-#   docker compose -f laboratory/docker-compose.yaml up --build
-#   open http://localhost:3000
-#
-# Prerequisite: Docker daemon must have IPv6 enabled.
-#   Add  {"ipv6": true, "fixed-cidr-v6": "fd00:f::/64"}  to /etc/docker/daemon.json
-#   (or Docker Desktop → Settings → Docker Engine), then restart the daemon.
+# Router   internal address              policy RA source   ISP prefix (NPTv6)
+# (a)      fc00:cafe:dead:beef::ff01     fe80::face:1       2001:db8:a::/64
+# (b)      fc00:cafe:dead:beef::ff02     fe80::face:2       2001:db8:b::/64
+# (c)      fc00:cafe:dead:beef::ff03     fe80::face:3       2001:db8:c::/64
 
 name: polaris-lab
 
-# ── Reusable host config (10 end-hosts share the same definition) ────────────
-x-host: &host-base
+x-router: &router
+  build:
+    context: ..
+    dockerfile: laboratory/Dockerfile.agent
+    additional_contexts:
+      # go-ra source. Defaults to the submodule; set GO_RA_DIR to build from
+      # another checkout (path relative to this file, or absolute).
+      gora: ${GO_RA_DIR:-../agent/go-ra}
+  cap_add: [NET_ADMIN, NET_RAW]
+  sysctls:
+    net.ipv6.conf.all.forwarding: 1
+  restart: "no"
+
+x-host: &host
   build:
     context: ..
     dockerfile: laboratory/Dockerfile.host
   cap_add: [NET_ADMIN]
-  # Hosts must accept Route Information Options (RIO) of any prefix length.
-  # The Linux default is 0 (RIO silently ignored); 128 enables them for any
-  # prefix length and is required for RIO-based per-host routing to work.
-  sysctls:
-    net.ipv6.conf.all.accept_ra_rt_info_max_plen: 128
-    net.ipv6.conf.default.accept_ra_rt_info_max_plen: 128
+  # The sysctl that makes Linux accept Route Information Options is added by
+  # docker-compose.kernel-rio.yaml, because it does not exist on every kernel.
   networks: [internal]
+  stop_grace_period: 1s
 
 services:
 
-  # ── Upstream web server ────────────────────────────────────────────────────
+  # ── The Internet ───────────────────────────────────────────────────────────
   web-server:
-    build:
-      context: ..
-      dockerfile: laboratory/Dockerfile.webserver
+    build: { context: .., dockerfile: laboratory/Dockerfile.webserver }
     hostname: web-server
     cap_add: [NET_ADMIN]
     networks:
-      server:
-        ipv6_address: fd10::64
-    restart: "no"
+      upstream: { ipv6_address: "fd10::64" }
+    stop_grace_period: 1s
 
   # ── Site-exit routers ──────────────────────────────────────────────────────
-  # entrypoint-agent.sh dynamically detects the internal-segment interface by
-  # its prefix, so the eth0/eth1/eth2 assignment order does not matter.
   router1:
-    build: { context: .., dockerfile: laboratory/Dockerfile.agent }
+    <<: *router
     hostname: router1
-    cap_add: [NET_ADMIN, NET_RAW]
-    sysctls:
-      net.ipv6.conf.all.forwarding: 1
+    environment: { ROUTER_LABEL: "Router(a)", ISP_PREFIX: "2001:db8:a::/64", POLICY_LL: "fe80::face:1" }
     networks:
-      internal: { ipv6_address: fc00:cafe:dead:beef::ff01 }
-      mgmt:     { ipv6_address: fd00::ff01 }
-      server:   { ipv6_address: fd10::ff01 }
-    restart: "no"
+      internal: { ipv6_address: "fc00:cafe:dead:beef::ff01" }
+      mgmt:     { ipv6_address: "fd00::ff01" }
+      upstream: { ipv6_address: "fd10::ff01" }
 
   router2:
-    build: { context: .., dockerfile: laboratory/Dockerfile.agent }
+    <<: *router
     hostname: router2
-    cap_add: [NET_ADMIN, NET_RAW]
-    sysctls:
-      net.ipv6.conf.all.forwarding: 1
+    environment: { ROUTER_LABEL: "Router(b)", ISP_PREFIX: "2001:db8:b::/64", POLICY_LL: "fe80::face:2" }
     networks:
-      internal: { ipv6_address: fc00:cafe:dead:beef::ff02 }
-      mgmt:     { ipv6_address: fd00::ff02 }
-      server:   { ipv6_address: fd10::ff02 }
-    restart: "no"
+      internal: { ipv6_address: "fc00:cafe:dead:beef::ff02" }
+      mgmt:     { ipv6_address: "fd00::ff02" }
+      upstream: { ipv6_address: "fd10::ff02" }
 
   router3:
-    build: { context: .., dockerfile: laboratory/Dockerfile.agent }
+    <<: *router
     hostname: router3
-    cap_add: [NET_ADMIN, NET_RAW]
-    sysctls:
-      net.ipv6.conf.all.forwarding: 1
+    environment: { ROUTER_LABEL: "Router(c)", ISP_PREFIX: "2001:db8:c::/64", POLICY_LL: "fe80::face:3" }
     networks:
-      internal: { ipv6_address: fc00:cafe:dead:beef::ff03 }
-      mgmt:     { ipv6_address: fd00::ff03 }
-      server:   { ipv6_address: fd10::ff03 }
-    restart: "no"
+      internal: { ipv6_address: "fc00:cafe:dead:beef::ff03" }
+      mgmt:     { ipv6_address: "fd00::ff03" }
+      upstream: { ipv6_address: "fd10::ff03" }
 
-  # ── RA Controller (backend + frontend) ─────────────────────────────────────
+  # ── RA controller ──────────────────────────────────────────────────────────
   controller-backend:
     build: { context: .., dockerfile: laboratory/Dockerfile.backend }
     environment:
@@ -98,37 +89,32 @@ services:
       DB_PATH: /data/controller.db
       NEIGHBOR_API_URLS: "http://neighbor-collector:8083/api/neighbors"
       NEIGHBOR_SOURCE_NAMES: "internal-segment"
-      NEIGHBOR_IFNAME: ""        # source-router based filtering is done in the collector
-      FETCH_INTERVAL: "30"
-    # SQLite DB lives on tmpfs so that `docker compose down` always returns
-    # the lab to a clean state (the controller's stored config is wiped).
-    tmpfs:
-      - /data
-    networks: [mgmt, internal]    # internal: gRPC reaches routers by their site IPv6 address
+      NEIGHBOR_IFNAME: ""
+      FETCH_INTERVAL: "10"
+    # The database lives on tmpfs: `./lab down` always returns to a clean lab.
+    tmpfs: [/data]
+    networks: [mgmt, internal]   # internal: gRPC reaches the routers at their site address
     healthcheck:
       test: ["CMD-SHELL", "wget -qO/dev/null http://localhost:8080/api/routers"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 5s
+      interval: 2s
+      timeout: 2s
+      retries: 30
     restart: unless-stopped
 
   controller-frontend:
     build: { context: .., dockerfile: laboratory/Dockerfile.frontend }
-    ports:    ["3000:80"]
+    ports: ["${LAB_PORT:-3000}:80"]
     networks: [mgmt]
-    depends_on: [controller-backend]
+    depends_on:
+      controller-backend: { condition: service_healthy }
     restart: unless-stopped
 
-  # ── Neighbor collector (SNMP) ─────────────────────────────────────────────
-  # Polls each router's SNMP agent (port 161) for the RFC 4293
-  # ipNetToPhysicalTable.  Routers populate this table by pinging ff02::1 on
-  # startup (and every 25 s) so site-internal hosts are discovered.
+  # Polls the routers' NDP caches over SNMP to discover the hosts.
   neighbor-collector:
     build: { context: .., dockerfile: laboratory/Dockerfile.neighbor-collector }
     environment:
       ADDR: ":8083"
-      POLL_INTERVAL: "30"
+      POLL_INTERVAL: "10"
       SNMP_TARGETS: >-
         [{"host":"router1","port":161,"community":"public"},
          {"host":"router2","port":161,"community":"public"},
@@ -136,40 +122,32 @@ services:
     networks: [mgmt]
     restart: unless-stopped
 
-  # ── End-hosts (internal segment only) ─────────────────────────────────────
-  # Each host shares the same configuration via the x-host anchor above.
-  # Link-local addresses are kernel-assigned (EUI-64 from a random MAC).
-  host01: { <<: *host-base, hostname: host01 }
-  host02: { <<: *host-base, hostname: host02 }
-  host03: { <<: *host-base, hostname: host03 }
-  host04: { <<: *host-base, hostname: host04 }
-  host05: { <<: *host-base, hostname: host05 }
-  host06: { <<: *host-base, hostname: host06 }
-  host07: { <<: *host-base, hostname: host07 }
-  host08: { <<: *host-base, hostname: host08 }
-  host09: { <<: *host-base, hostname: host09 }
-  host10: { <<: *host-base, hostname: host10 }
+  # ── End hosts ──────────────────────────────────────────────────────────────
+  host01: { <<: *host, hostname: host01 }
+  host02: { <<: *host, hostname: host02 }
+  host03: { <<: *host, hostname: host03 }
+  host04: { <<: *host, hostname: host04 }
+  host05: { <<: *host, hostname: host05 }
+  host06: { <<: *host, hostname: host06 }
+  host07: { <<: *host, hostname: host07 }
+  host08: { <<: *host, hostname: host08 }
+  host09: { <<: *host, hostname: host09 }
+  host10: { <<: *host, hostname: host10 }
 
-# ── Networks ──────────────────────────────────────────────────────────────────
 networks:
   internal:
-    driver: bridge
     enable_ipv6: true
     ipam:
       config:
         - subnet: 172.20.0.0/24
         - subnet: fc00:cafe:dead:beef::/64
-
   mgmt:
-    driver: bridge
     enable_ipv6: true
     ipam:
       config:
         - subnet: 172.20.2.0/24
         - subnet: fd00::/64
-
-  server:
-    driver: bridge
+  upstream:
     enable_ipv6: true
     ipam:
       config:

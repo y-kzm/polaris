@@ -1,14 +1,18 @@
-# Build go-ra agent from source (context: repo root)
+# Site-exit router: go-ra agent built from source.
+#
+# Build contexts (see docker-compose.yaml):
+#   .     repository root
+#   gora  go-ra source tree (agent/go-ra by default, GO_RA_DIR to override)
 FROM golang:1.25-alpine AS builder
 WORKDIR /src
-COPY agent/go-ra/go.mod agent/go-ra/go.sum ./
+COPY --from=gora go.mod go.sum ./
 RUN go mod download
-COPY agent/go-ra/ .
+COPY --from=gora . .
 RUN go build -o /gorad ./cmd/gorad && \
     go build -o /gora  ./cmd/gora
 
 FROM alpine:3.21
-RUN apk add --no-cache iproute2 iputils net-snmp curl
+RUN apk add --no-cache iproute2 iputils ip6tables net-snmp curl
 COPY --from=builder /gorad /gorad
 COPY --from=builder /gora  /gora
 COPY laboratory/entrypoint-agent.sh /entrypoint.sh

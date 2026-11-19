@@ -1,0 +1,21 @@
+# Added by ./lab up when the Docker host's kernel supports Route Information
+# Options (CONFIG_IPV6_ROUTE_INFO). Linux ignores the option unless this
+# sysctl allows it; 128 accepts every prefix length. On kernels without the
+# sysctl (Docker Desktop) this file is not used and the hosts run rio-shim.
+
+x-rio: &rio
+  sysctls:
+    net.ipv6.conf.all.accept_ra_rt_info_max_plen: 128
+    net.ipv6.conf.default.accept_ra_rt_info_max_plen: 128
+
+services:
+  host01: *rio
+  host02: *rio
+  host03: *rio
+  host04: *rio
+  host05: *rio
+  host06: *rio
+  host07: *rio
+  host08: *rio
+  host09: *rio
+  host10: *rio

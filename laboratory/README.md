@@ -1,220 +1,192 @@
-# Polaris Lab — Docker Compose Demo
+# Polaris Lab
 
-A self-contained, ready-to-run Polaris deployment for evaluation and
-demos.  Three site-exit routers, ten end hosts, the controller, and an
-upstream web server, all in a single `docker compose up`.
+A complete Polaris deployment on one machine: three site-exit routers (one
+ISP each), ten end hosts, the RA controller, and a web server that plays the
+Internet. One command starts it, one command proves that the policies work.
 
 [English](README.md) / [日本語](README_ja.md)
 
-## Topology
+## Quick start
 
-Three Docker bridge networks, each modeling one segment of an IPv6
-site multihoming deployment:
+Requirements: Docker (with Compose v2) and Python 3. Nothing else.
+
+```bash
+git submodule update --init      # fetch agent/go-ra (once)
+cd laboratory
+./lab up                         # build, start, wait until ready (~1 min the first time)
+./lab demo                       # apply every scenario and verify each one
+./lab down                       # stop and delete everything
+```
+
+`./lab demo` ends with `DEMO PASSED` when every host, in every scenario,
+has exactly the routes the policy designates **and** its traffic leaves
+through the designated ISP.
+
+The web UI is at <http://localhost:3000> (`LAB_PORT=8000 ./lab up` to change
+the port).
+
+## Commands
+
+| Command | What it does |
+|---------|--------------|
+| `./lab up` | Build and start the lab; wait until the routers are registered and every host has received the baseline RAs |
+| `./lab demo` | `clear` → every scenario → `clear`, verifying the hosts after each step |
+| `./lab scenarios` | List the built-in scenarios |
+| `./lab apply <scenario>` | Replace the whole policy with a scenario and apply it |
+| `./lab clear` | Remove every policy |
+| `./lab verify` | Compare every host with the policy currently stored in the controller |
+| `./lab status` | Show the RA configurations each router is running |
+| `./lab down` | Stop the lab and delete its state |
+
+## Topology
 
 ![topology](../imgs/topology.png)
 
-| Segment | Subnet | Members |
+| Network | Subnet | Members |
 |---------|--------|---------|
-| `internal` | `fc00:cafe:dead:beef::/64` | host01..10, router1..3 (RA delivery) |
-| `mgmt`     | `fd00::/64`                | controller, neighbor-collector, router1..3 (gRPC) |
-| `server`   | `fd10::/64`                | web-server, router1..3 (forwarding upstream) |
+| `internal` | `fc00:cafe:dead:beef::/64` | host01–10, routers (RAs) |
+| `upstream` | `fd10::/64` | routers, web server |
+| `mgmt` | `fd00::/64` | controller, neighbor collector, routers (gRPC) |
 
-Each router connects to all three networks.  Its **internal-segment
-interface name** is detected dynamically by prefix
-(`fc00:cafe:dead:beef::/64`) because Docker does not guarantee a
-deterministic `eth0/eth1/eth2` assignment order.
+| Router | Baseline RA source | Policy RA source | ISP prefix (NPTv6) |
+|--------|--------------------|------------------|--------------------|
+| Router(a) | kernel link-local | `fe80::face:1` | `2001:db8:a::/64` → ISP-A |
+| Router(b) | kernel link-local | `fe80::face:2` | `2001:db8:b::/64` → ISP-B |
+| Router(c) | kernel link-local | `fe80::face:3` | `2001:db8:c::/64` → ISP-C |
 
-## Quick start
+All hosts share the internal prefix. Each router translates it to its own ISP
+prefix with NPTv6 (RFC 6296). The web server answers every request with the
+ISP it came through, derived from the translated source address:
+
+```
+$ docker exec polaris-lab-host01-1 wget -qO- 'http://[2001:db8:f1::1]/'
+isp=ISP-A client=2001:db8:a:0:... server=2001:db8:f1::1
+```
+
+The web server has two service addresses:
+
+| Service | Address | Reached by |
+|---------|---------|------------|
+| S1 | `2001:db8:f1::1` | the per-destination rule for `2001:db8:f1::/48` (RIO), if the host has one |
+| S2 | `2001:db8:f2::1` | the default route (DRP) |
+
+## Two source addresses per router
+
+A host keeps one default-router entry per RA **source address** and
+overwrites its preference and lifetime with every RA from that address
+(RFC 4861 §6.3.4, RFC 4191 §3.1). If the policy RA (preference high, sent to
+selected hosts) and the baseline RA (preference medium, sent to all hosts)
+came from the same address, each would undo the other.
+
+Each router therefore has two link-local addresses on the internal interface:
+
+- the **baseline address** sends the baseline RA: prefix, Router Lifetime
+  1800 s, preference medium, to every host;
+- the **policy address** sends only policy RAs, unicast, to the hosts of a
+  policy.
+
+On a host, they are two independent router entries:
+
+```
+$ docker exec polaris-lab-host06-1 ip -6 route show    # paper scenario, group G2
+default via fe80::face:2            proto ra  pref high      ← policy RA of Router(b)
+default via fe80::dc1f:…            proto ra  pref medium    ← baseline RA of Router(b)
+default via fe80::10a3:…            proto ra  pref medium    ← baseline RA of Router(a)
+default via fe80::7896:…            proto ra  pref medium    ← baseline RA of Router(c)
+```
+
+A policy RA is a default router (preference high, Router Lifetime > 0) only
+when `::/0` is assigned to the router. Otherwise its Router Lifetime is 0: it
+carries Route Information Options and nothing else, so the policy address
+appears only as the next hop of those routes.
+
+Withdrawing a policy is one RA from the policy address with zero lifetimes.
+The baseline entries are untouched, so the host falls back to them at once.
+
+## Scenarios
+
+| Scenario | Policy | What it shows |
+|----------|--------|---------------|
+| `paper` | G1 host01–05: S1 prefix via Router(a). G2 host06–10: default via Router(b) | The example of the paper: RIO and DRP policies side by side |
+| `swap` | G1 → Router(c), G2 → Router(a) | Transition: the new routers are advertised before the old ones are withdrawn |
+| `overlap` | G1 host01–07: S1 prefix via Router(a). G2 host04–10: default via Router(b) | host04–07 follow two rules on two routers |
+| `merge` | G1 host01–05: S1 prefix via Router(a). G2 host03–05: default via Router(a) | Two rules for one router become one policy RA per host |
+| `clear` | none | Every policy is withdrawn; hosts return to the baseline |
+
+## What `verify` checks
+
+For every host, against the rules and groups stored in the controller:
+
+1. **Routing table.** The RA-learned routes are exactly the designated ones:
+   each RIO route via the policy address of its router, a high-preference
+   default router if and only if the policy assigns `::/0`, and a
+   medium-preference baseline entry for all three routers. A leftover route
+   from a previous policy is a failure.
+2. **Forwarding.** An HTTP request to S1 and to S2 returns, and the web
+   server reports the ISP of the designated router. Where the policy
+   designates no router, any ISP is accepted.
+
+The expectation is computed by the lab tooling from the rules and groups,
+independently of the controller's compiler.
+
+```
+  HOST    S1 2001:db8:f1::1             S2 2001:db8:f2::1             ROUTING TABLE
+  host01  ISP-A (policy: Router(a))     ISP-C (no policy)             matches policy
+  host06  ISP-B (policy: Router(b))     ISP-B (policy: Router(b))     matches policy
+  ...
+  PASS: 10/10 hosts match the policy (routing table and egress ISP).
+```
+
+## Kernel support for Route Information Options
+
+Linux processes RIOs only if the kernel was built with
+`CONFIG_IPV6_ROUTE_INFO` **and** `accept_ra_rt_info_max_plen` is raised from
+its default of 0. `./lab up` detects which case applies:
+
+| Docker host kernel | What the lab does |
+|--------------------|-------------------|
+| Supports RIO (most Linux distributions) | Sets `accept_ra_rt_info_max_plen=128` on the hosts (`docker-compose.kernel-rio.yaml`). The kernel handles everything |
+| No RIO support (Docker Desktop on macOS / Windows) | Starts `rio-shim` on each host: a small program that installs the routes of received RIOs the way the kernel would. Default routers and preferences are still handled by the kernel |
+
+`./lab up` prints which mode is in use. Results obtained with `rio-shim` show
+that the routers send the right RAs; they are not evidence of how a kernel
+processes RIOs. For that, run the lab on a Linux host.
+
+## Building from another go-ra checkout
+
+The router image is built from the `agent/go-ra` submodule. To build from a
+different checkout:
 
 ```bash
-# from repo root
-git submodule update --init                # fetch agent/go-ra
-docker compose -f laboratory/docker-compose.yaml up --build
+GO_RA_DIR=/path/to/go-ra ./lab up
 ```
-
-Once everything is healthy (~30 s after the first build):
-
-1. Open <http://localhost:3000>
-2. Routers `Router(a/b/c)` are already registered (auto-self-registration
-   on boot — `entrypoint-agent.sh` calls the controller's
-   `POST /api/routers`).
-3. Wait ~30 s for the first SNMP poll to populate the **Clients** tab
-   with 10 hosts.
-4. Apply a policy via the UI **or** the CLI script (see below).
-
-> **Prerequisite**: the Docker daemon must have IPv6 enabled.
-> Add `{"ipv6": true, "fixed-cidr-v6": "fd00:f::/64"}` to
-> `/etc/docker/daemon.json` (or Docker Desktop → Settings → Docker Engine),
-> then restart Docker.
-
-## Demo workflow — RIO-based policy routing
-
-The lab's verification scripts exercise **RIO-based** specific-prefix
-routing only.
-
-### Apply a policy (split hosts across two routers)
-
-```bash
-# Group 1: hosts 1-5  →  Router(a)  (RIO: fd10::/64)
-sh laboratory/check/apply-policy.sh "Router(a)" 1-5
-
-# Group 2: hosts 6-10 →  Router(b)
-sh laboratory/check/apply-policy.sh "Router(b)" 6-10
-```
-
-Index `N` maps to the `polaris-lab-hostNN-1` container — e.g. `1-5`
-means host01..host05, with each container's link-local resolved at
-runtime.
-
-Each invocation:
-1. Resolves the requested indices to host01..10 link-locals.
-2. Creates a Group with those hosts.
-3. Creates a Rule (`nexthop = router.address`, `entries = [{value: fd10::/64}]`).
-4. Assigns the rule to the group and `POST /api/policy/apply`.
-5. Waits 5 s and runs `check-routing.sh`.
-
-### Verify
-
-```bash
-sh laboratory/check/check-routing.sh
-```
-
-Reads each host's routing table and prints the `via` next-hop of the
-`fd10::/64` RIO route:
-
-```
-HOST        NEXT HOP (RIO route)
-host01      fe80::abcd:...     ← Router(a) link-local
-host02      fe80::abcd:...     ← Router(a)
-...
-host06      fe80::ef01:...     ← Router(b)
-```
-
-`(no RIO route — not in any policy group)` means the unicast RA either
-hasn't arrived yet, or the host isn't a member of any Group.
-
-### CLI usage
-
-```
-sh laboratory/check/apply-policy.sh <router>  <hosts>
-
-  <router>   "Router(a)" | "Router(b)" | "Router(c)"
-             or the IPv6 address (e.g. fc00:cafe:dead:beef::ff01)
-  <hosts>    "1-5"  range
-             "1,3,5" list
-             "all"  every host
-```
-
----
-
-## Demo workflow — through the Web UI
-
-1. **Routers** card on the dashboard shows reachability.  Click an
-   interface name (`eth0` / `eth1` / `eth2`) to inspect the running RA
-   config (config #0 = baseline multicast, config #N≥1 = unicast policy
-   with clients + RIO/DRP).
-2. **Clients** tab — list of discovered hosts (link-local, source router,
-   state).  Use multi-select.
-3. **Policy Groups** tab — create a Group from selected clients.
-4. **RA Policy** tab — create a Rule (destination `fd10::/64`, nexthop
-   `Router(a)`).
-5. Assign the Rule to the Group and click **Apply**.
-6. Re-open the router's RA Interface modal — config #1 should show the
-   selected clients.
-
----
-
-## Components
-
-| Service | Image source | Port | Role |
-|---------|--------------|------|------|
-| `web-server`         | `Dockerfile.webserver`           | 80 (internal) | nginx, lab "Internet" target |
-| `router1/2/3`        | `Dockerfile.agent`               | 50051 (gRPC), 161 (snmpd) | go-ra + snmpd; self-registers with controller |
-| `controller-backend` | `Dockerfile.backend`             | 8080 | Go HTTP API (chi router) |
-| `controller-frontend`| `Dockerfile.frontend`            | 3000 → 80 | nginx serving the React build, proxies `/api` |
-| `neighbor-collector` | `Dockerfile.neighbor-collector`  | 8083 | SNMP polling of routers (`ipNetToPhysicalTable`) |
-| `host01..host10`     | `Dockerfile.host`                | —    | Alpine + `iputils` + `iproute2`, accepts RIO |
-
-### Auto-discovery flow
-
-1. Each router pings `ff02::1` on its internal interface at boot, then
-   every 25 s — populates the kernel NDP cache with all hosts on the
-   internal segment.
-2. `snmpd` exposes the NDP cache via `ipNetToPhysicalTable`
-   (RFC 4293 / OID `1.3.6.1.2.1.4.35`).
-3. `neighbor-collector` polls all three routers in parallel and merges
-   the results, filtering by:
-   - the router's known internal interface (registered via
-     `PUT /api/targets/{host}` from `entrypoint-agent.sh`)
-   - link-local addresses only (`fe80::/10`)
-4. `controller-backend` watches the collector and persists discovered
-   neighbors in SQLite.
-
----
-
-## RIO acceptance (essential!)
-
-By default, the Linux kernel ignores RIO from RAs:
-`net.ipv6.conf.<iface>.accept_ra_rt_info_max_plen = 0`.  Each lab host
-sets it to 128 via Docker's `sysctls:` directive:
-
-```yaml
-sysctls:
-  net.ipv6.conf.all.accept_ra_rt_info_max_plen: 128
-  net.ipv6.conf.default.accept_ra_rt_info_max_plen: 128
-```
-
-Without this, the per-host unicast RA arrives but its RIO entries are
-silently dropped — `ip -6 route show fd10::/64` returns nothing.
-
----
 
 ## Files
 
 ```
 laboratory/
-├── docker-compose.yaml          three-segment topology, 17 services
-├── Dockerfile.agent             go-ra + snmpd builder (Alpine 3.21)
-├── Dockerfile.backend           controller backend (Go 1.24, CGO for SQLite)
-├── Dockerfile.frontend          React build + nginx
-├── Dockerfile.host              minimal Alpine end-host
-├── Dockerfile.neighbor-collector
-├── Dockerfile.webserver         nginx with return routes via all routers
-├── entrypoint-agent.sh          interface autodetect, snmpd, self-register, periodic ND ping
-├── entrypoint-host.sh           sysctls (RA accept + RIO accept)
-├── entrypoint-webserver.sh      add return routes to fc00:cafe:dead:beef::/64 via 3 routers
-├── nginx.conf                   frontend SPA + /api proxy + cache headers
-├── nginx-webserver.conf         upstream web server response
-└── check/
-    ├── apply-policy.sh          create group + rule + apply (RIO)
-    └── check-routing.sh         show fd10::/64 RIO next-hop per host
+├── lab                              the command
+├── labkit/                          its Python modules (env, scenarios, verify)
+├── docker-compose.yaml              topology
+├── docker-compose.kernel-rio.yaml   RIO sysctl for hosts, added when the kernel supports it
+├── Dockerfile.*                     images: agent, host, backend, frontend, collector, web server
+├── entrypoint-agent.sh              router: NPTv6, two link-local addresses, go-ra, registration
+├── entrypoint-host.sh               host: RA-only default routes, RIO handling
+├── entrypoint-webserver.sh          service addresses and per-ISP return routes
+├── nginx-webserver.conf             "which ISP did you come through" responder
+├── nginx.conf                       web UI and /api proxy
+└── rio-shim/                        RIO fallback for kernels without CONFIG_IPV6_ROUTE_INFO
 ```
 
 ## Troubleshooting
 
-### Hosts show `(no RIO route ...)` after applying a policy
-
-- Wait longer — the controller's `POST /api/policy/apply` triggers an
-  immediate RA, but the host's NDP daemon may take a few RA intervals
-  to install the RIO.
-- Check `accept_ra_rt_info_max_plen`:
-  ```bash
-  docker exec polaris-lab-host01-1 \
-    sysctl net.ipv6.conf.all.accept_ra_rt_info_max_plen
-  # → 128
-  ```
-- Verify the router pushed the unicast config:
-  ```bash
-  curl -s http://172.20.2.2:8080/api/routers/<id>/interfaces | jq
-  # → look for clients=[fe80::...] and routes=[{prefix: "fd10::/64", ...}]
-  ```
-
-### Neighbor list is empty
-
-- Wait ~30 s for the first SNMP poll cycle.
-- Inspect: `docker logs polaris-lab-neighbor-collector-1 | tail`
-- Verify routers registered themselves:
-  ```bash
-  docker exec polaris-lab-controller-backend-1 \
-    wget -qO- http://localhost:8080/api/routers
-  ```
+- **`./lab up` times out.** Run `./lab status`, then
+  `docker compose -f docker-compose.yaml logs router1 controller-backend`.
+- **`go-ra source not found`.** Run `git submodule update --init` in the
+  repository root, or set `GO_RA_DIR`.
+- **A host shows `MISMATCH`.** The lines under it say what differs. Inspect
+  the host with `docker exec polaris-lab-host01-1 ip -6 route show`, and the
+  routers with `./lab status`.
+- **Clients tab lists stale hosts.** Entries of containers from an earlier
+  `./lab up` stay in the routers' neighbor caches for a while. `./lab down`
+  followed by `./lab up` starts clean.

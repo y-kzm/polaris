@@ -30,6 +30,7 @@ func migrate(db *sql.DB) error {
 			name TEXT NOT NULL,
 			address TEXT NOT NULL,
 			interface TEXT NOT NULL DEFAULT '',
+			policy_source_address TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL DEFAULT 'active',
 			ra_interval_ms INTEGER NOT NULL DEFAULT 3000,
 			current_hop_limit INTEGER NOT NULL DEFAULT 64,
@@ -71,12 +72,17 @@ func migrate(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	// Idempotent column add — ignore "duplicate column" error on existing DBs
-	// that pre-date the source field.
-	if _, err := db.Exec(`ALTER TABLE neighbors ADD COLUMN source TEXT NOT NULL DEFAULT ''`); err != nil {
-		// SQLite reports "duplicate column name: source" when the column already exists.
-		if !strings.Contains(err.Error(), "duplicate column name") {
-			return fmt.Errorf("migrate neighbors.source: %w", err)
+	// Columns added after the first release. SQLite has no ADD COLUMN IF NOT
+	// EXISTS, so the "duplicate column name" error of an up-to-date DB is
+	// ignored.
+	added := []struct{ table, column string }{
+		{"neighbors", "source"},
+		{"routers", "policy_source_address"},
+	}
+	for _, c := range added {
+		stmt := fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s TEXT NOT NULL DEFAULT ''`, c.table, c.column)
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate %s.%s: %w", c.table, c.column, err)
 		}
 	}
 	return nil

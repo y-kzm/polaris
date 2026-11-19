@@ -84,6 +84,33 @@ interfaces:
 
 全オプションのリファレンスは [`go-ra/config.yaml`](go-ra/config.yaml) を参照してください。
 
+## ポリシー RA の送信元アドレス
+
+コントローラが送らせるポリシー RA は、ベースライン RA と送信元アドレスを
+共有してはいけません。ホストは送信元アドレスごとにデフォルトルータのエントリを
+1 つ持つため、共有すると互いの優先度と lifetime を上書きします。
+LAN 側インターフェースに 2 つ目のリンクローカルアドレスを付け、
+ポリシー RA 専用にします。
+
+`setup.sh` は、次の 2 つの変数が両方設定されているときにこれを行います。
+
+```bash
+sudo LAN_IF=eth1 POLICY_LL=fe80::face:1 \
+     WAN_PREFIX=... LAN_PREFIX=... WAN_IF=eth0 ./setup.sh
+```
+
+サービスの起動前に毎回 `POLICY_LL` を `LAN_IF` に割り当てる systemd の drop-in を
+インストールします。残る手作業は次の 2 つで、`setup.sh` が表示します。
+
+1. `config.yaml` のベースラインのインスタンスに、インターフェース本来の
+   リンクローカルアドレスを `sourceAddress` として設定する。
+   リンクローカルが 2 つあると、省略時にどちらが使われるかは決まっていません
+   （後から追加したアドレスが使われることがあります）。必ず明示してください。
+2. RA コントローラで、そのルータの **Policy RA source address** に `POLICY_LL` を設定する。
+
+`POLICY_LL` はリンク上で一意である必要があります。未使用の `fe80::/64` のアドレスなら何でも構いません。
+コントローラは、ベースラインと同じアドレスをポリシー用に指定した場合、適用を拒否します。
+
 ## systemd デプロイ
 
 ### インストール手順
@@ -171,7 +198,8 @@ sudo sed -i 's|/opt/go-ra-server|/your/path|g' \
 | `ListInterfaces` | 現在動作中の `InterfaceConfig` 一覧を返す（本フォークで追加。コントローラの RA Interface Detail パネルが使用）|
 | `AddInterface` | インタフェース上に新しい RA インスタンスを追加する |
 | `UpdateInterface` | 既存の RA インスタンスを更新する |
-| `DeleteInterface` | RA インスタンスを削除する（設定済みの場合は goodbye RA を送信）|
+| `DeleteInterface` | RA インスタンスを削除する（設定済みの場合は goodbye RA を送信。`skip_goodbye` 指定時は送らない）|
+| `SendRA` | 設定をインストールせずに RA を 1 通送る。コントローラが特定ホストから経路やデフォルトルータを取り下げるために使う |
 
 ```bash
 # grpcurl を使った簡易確認

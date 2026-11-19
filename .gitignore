@@ -1,6 +1,10 @@
 # Claude Code session data
 .claude/
 
+# Python bytecode
+__pycache__/
+*.pyc
+
 # OS metadata
 .DS_Store
 Thumbs.db
@@ -30,3 +34,7 @@ go.work.sum
 
 # Frontend build output (also covered by controller/frontend/.gitignore)
 dist/
+
+# experiments
+experiments/results/
+experiments/.state-*.json

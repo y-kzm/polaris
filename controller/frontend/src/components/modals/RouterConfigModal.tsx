@@ -53,6 +53,7 @@ export default function RouterConfigModal({
                     <div className="text-sm text-gray-600 space-y-1">
                       <div>Address: <span className="font-mono">{router.address}</span></div>
                       <div>Interface: <span className="font-mono">{router.interface}</span></div>
+                      <div>Policy source: <span className="font-mono">{router.policy_source_address || '(baseline address)'}</span></div>
                       <div className="text-xs mt-2 pt-2 border-t">
                         <div className="grid grid-cols-2 gap-x-4 gap-y-1">
                           <div>RA Interval: {router.ra_interval_milliseconds || 3000}ms</div>
@@ -118,6 +119,21 @@ export default function RouterConfigModal({
                   placeholder="eth0"
                   className="w-full px-3 py-2 border rounded-lg"
                 />
+              </div>
+              {/* Policy source address */}
+              <div>
+                <label className="block text-sm font-medium mb-1">Policy RA source address</label>
+                <input
+                  type="text"
+                  value={newRouter.policy_source_address}
+                  onChange={(e) => onNewRouterChange({ ...newRouter, policy_source_address: e.target.value })}
+                  placeholder="fe80::face:1"
+                  className="w-full px-3 py-2 border rounded-lg"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  A second link-local address on the interface, used only for policy RAs so they
+                  do not overwrite the baseline RA on the hosts. Leave empty to share the baseline address.
+                </p>
               </div>
 
               {/* Advanced interface configuration */}

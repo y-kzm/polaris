@@ -1,0 +1,43 @@
+# A small, fast variant of single.toml for trying the scripts (about 10 minutes for `run all`).
+mode = "single"
+workdir = "/var/tmp/polaris-exp"
+
+[site]
+hosts = 20
+
+[policy]
+g1_hosts = 5
+
+[ra]
+baseline_interval_ms = 400000
+policy_interval_ms = 40000
+router_lifetime_s = 1800
+
+[[router]]
+isp_prefix = "2001:db8:a::/64"
+
+[[router]]
+isp_prefix = "2001:db8:b::/64"
+
+[experiments.load]
+baseline_interval_ms = 10000
+policy_interval_ms = 2000
+window_s = 30
+
+[experiments.spread]
+policy_interval_ms = 1000
+rounds = 5
+conditions = [[5, 7], [15, 0], [20, 0], [5, 16]]
+
+[experiments.overwrite]
+baseline_interval_ms = 6000
+policy_interval_ms = 3000
+duration_s = 30
+hosts = 5
+
+[experiments.failover]
+trials = 2
+bound_trials = 1
+power_loss_window_s = 75
+bound_lifetime_s = 30
+bound_interval_ms = 10000

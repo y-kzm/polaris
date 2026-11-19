@@ -48,6 +48,7 @@ const RAControllerFrontend = () => {
     name: '',
     address: '',
     interface: 'eth0',
+    policy_source_address: '',
     ra_interval_milliseconds: 3000,
     current_hop_limit: 64,
     managed: false,
@@ -185,7 +186,7 @@ const RAControllerFrontend = () => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await loadRouters();
       setNewRouter({
-        name: '', address: '', interface: 'eth0',
+        name: '', address: '', interface: 'eth0', policy_source_address: '',
         ra_interval_milliseconds: 3000, current_hop_limit: 64,
         managed: false, other: false, router_lifetime_seconds: 1800,
         reachable_time_milliseconds: 0, retransmit_time_milliseconds: 0,
@@ -425,15 +426,17 @@ const RAControllerFrontend = () => {
 
       setPreviousYaml(generateYaml(rules, groups));
 
-      const results: Array<{ rule_id: number; router: string; success: boolean; error?: string }> =
+      const results: Array<{ router: string; success: boolean; error?: string }> =
         result.results ?? [];
-      const errorCount = results.filter(r => !r.success).length;
+      const warnings: string[] = result.warnings ?? [];
+      const failed = results.filter(r => !r.success);
 
       if (result.success) {
-        notify(`Policy committed (${results.length} rule(s) applied)`, 'success');
+        notify(`Policy committed (${results.length} router(s) reconciled)`, 'success');
       } else {
-        notify(`Policy committed with ${errorCount} error(s) — check router connectivity`, 'error');
+        notify(`Policy not fully applied — ${failed.map(r => `${r.router}: ${r.error}`).join('; ')}`, 'error');
       }
+      warnings.forEach(w => notify(`Policy warning: ${w}`, 'error'));
     } catch (e) {
       notify(`Commit failed: ${(e as Error).message}`, 'error');
     }

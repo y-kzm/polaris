@@ -84,6 +84,44 @@ interfaces:
 
 See [`go-ra/config.yaml`](go-ra/config.yaml) for a full reference with all options.
 
+## Policy RA source address
+
+The controller's policy RAs must not share a source address with the baseline
+RA: a host keeps one default-router entry per source address, so the two
+would overwrite each other's preference and lifetime. Give the LAN-facing
+interface a second link-local address and use it only for policy RAs.
+
+`setup.sh` does this when both variables are set:
+
+```bash
+sudo LAN_IF=eth1 POLICY_LL=fe80::face:1 \
+     WAN_PREFIX=... LAN_PREFIX=... WAN_IF=eth0 ./setup.sh
+```
+
+It installs a systemd drop-in that assigns `POLICY_LL` to `LAN_IF` before
+every start of the service. Two manual steps remain, and `setup.sh` prints
+them:
+
+1. In `config.yaml`, set `sourceAddress` on the baseline instance to the
+   interface's original link-local address. With two link-local addresses,
+   which one is used by default is not defined (it can be the one added
+   later), so always name it explicitly.
+2. In the RA controller, set the router's **Policy RA source address** to
+   `POLICY_LL`.
+
+`POLICY_LL` must be unique on the link. Any unused `fe80::/64` address works.
+The controller refuses to apply a policy if the policy address is also the
+source address of the baseline instance.
+
+### Upgrading from a version without policy source addresses
+
+Older controllers installed one configuration per rule, without the
+`polaris-policy` description. The current controller does not touch
+configurations it cannot identify as its own, so restart the agent
+(`systemctl restart go-ra-server`) after upgrading: this drops the old
+configurations, and the next **Apply** installs the new ones. The agent and
+the controller must be upgraded together (`SendRA` is required).
+
 ## Systemd deployment
 
 ### Installation
@@ -171,7 +209,8 @@ Then re-run `setup.sh` with `INSTALL_DIR=/your/path`.
 | `ListInterfaces` | Returns the full `InterfaceConfig` list currently running (added in this fork; used by the controller's RA Interface Detail panel) |
 | `AddInterface` | Adds a new RA instance on an interface |
 | `UpdateInterface` | Updates an existing RA instance |
-| `DeleteInterface` | Removes an RA instance (sends goodbye RA if configured) |
+| `DeleteInterface` | Removes an RA instance (sends goodbye RA if configured, unless `skip_goodbye` is set) |
+| `SendRA` | Sends one RA without installing a configuration; used by the controller to withdraw routes or a default router from specific hosts |
 
 ```bash
 # Quick check with grpcurl

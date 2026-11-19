@@ -1,0 +1,61 @@
+# Testbed mode: the four machines of the paper, driven over SSH.
+# NOT TESTED by the authors of these scripts — review before use.
+#
+# Requirements on every machine: SSH key login from this machine, and sudo
+# without a password for that user. Clocks must be synchronised (chrony/NTP):
+# T_withdraw compares the router's clock with the emulator's.
+#
+#   cp config/testbed.example.toml config/testbed.toml   # then edit
+#   ./exp -c config/testbed.toml setup
+mode = "testbed"
+workdir = "/var/tmp/polaris-exp"
+
+[machines]
+controller = "user@controller.example"
+emulator = "user@emulator.example"
+emulator_bridge = "br-px"            # created if missing
+emulator_uplink = "enp3s0"           # NIC towards the routers' LAN. It is attached to the bridge:
+                                     # do NOT name the interface your SSH session uses.
+
+[site]
+hosts = 200
+lan_prefix = "fd00:1::/64"           # the site prefix the routers advertise
+manage_nptv6 = false                 # true: install the NPTv6 rules; false: the routers already have them
+
+[policy]
+g1_hosts = 50
+default_dst = "2001:db8::1"          # with a real upstream: an address that answers ping, outside D1
+
+[ra]
+baseline_interval_ms = 400000
+policy_interval_ms = 40000
+router_lifetime_s = 1800
+
+[upstream]
+kind = "real"                        # "emulated" if your testbed has its own ISP/server emulation
+[upstream.urls]                      # fetched with curl -6 by the forwarding experiment
+default = "https://ifconfig.co/ip"   # must answer with the client address
+# d1 = "https://teams.microsoft.com/"  # must resolve to an address inside the FIRST prefix of policy.d1;
+                                       # it is checked by packet counts only
+
+[[router]]
+ssh = "user@router-a.example"
+isp_prefix = "2001:db8:a::/64"       # the /64 this router's ISP delegated
+mgmt_addr = "2001:db8:ffff::a"       # address the controller uses to reach gorad (port 50051)
+lan_if = "enp2s0"
+wan_if = "enp1s0"
+# fail_cmd = "ip link set enp1s0 down"     # how to break the upstream (default shown)
+# restore_cmd = "ip link set enp1s0 up"
+
+[[router]]
+ssh = "user@router-b.example"
+isp_prefix = "2001:db8:b::/64"
+mgmt_addr = "2001:db8:ffff::b"
+lan_if = "enp2s0"
+wan_if = "enp1s0"
+
+[experiments.failover]
+# The failover experiment takes Router(b)'s LAN and upstream interfaces down (power_loss) and
+# inserts an ip6tables rule (withdraw_lost). SSH and mgmt_addr must use a different interface,
+# or the router becomes unreachable. Set this to true once you have checked.
+testbed_confirmed = false

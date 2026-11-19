@@ -1,101 +1,116 @@
 #!/bin/sh
-sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1 || true
+# Site-exit router of the lab: NPTv6, the go-ra agent, and self-registration
+# with the RA controller.
+#
+# Required environment:
+#   ROUTER_LABEL   name shown in the UI, e.g. "Router(a)"
+#   ISP_PREFIX     the /64 this router's ISP delegated, e.g. 2001:db8:a::/64
+#   POLICY_LL      link-local source address of the policy RAs, e.g. fe80::face:1
+set -eu
 
-# Detect the internal-segment interface by its known prefix
-# (fc00:cafe:dead:beef::/64), regardless of Docker's eth assignment order.
-RA_IFACE=$(ip -6 -br addr 2>/dev/null | awk '/fc00:cafe:dead:beef/ {split($1,a,"@"); print a[1]}' | head -1)
-if [ -z "$RA_IFACE" ]; then
-    echo "WARNING: could not detect internal interface; defaulting to eth0" >&2
-    RA_IFACE=eth0
+LAN_PREFIX="fc00:cafe:dead:beef::/64"
+INTERNET_PREFIX="2001:db8:f0::/44"   # the lab "Internet", behind the web server
+WEB_SERVER="fd10::64"
+RA_INTERVAL_MS="${RA_INTERVAL_MS:-3000}"
+HOSTNAME=$(hostname)
+
+sysctl -qw net.ipv6.conf.all.forwarding=1 2>/dev/null || true
+
+# Docker does not guarantee the eth0/eth1/eth2 order, so find each interface
+# by the prefix of its network.
+iface_of() {
+    ip -6 -br addr | awk -v p="$1" 'index($0, p) {split($1, a, "@"); print a[1]; exit}'
+}
+LAN_IF=$(iface_of "fc00:cafe:dead:beef:")
+WAN_IF=$(iface_of "fd10::")
+if [ -z "$LAN_IF" ] || [ -z "$WAN_IF" ]; then
+    echo "[$HOSTNAME] cannot find the internal or upstream interface" >&2
+    exit 1
 fi
-IFACE="$RA_IFACE"
 
-# SNMP daemon — exposes RFC 4293 ipNetToPhysicalTable so the neighbor-collector
-# can read this router's NDP cache via SNMPv2c community "public".
-mkdir -p /etc/snmp
-cat > /etc/snmp/snmpd.conf <<EOF
-rocommunity  public  default
-rocommunity6 public  default
-EOF
-snmpd -C -c /etc/snmp/snmpd.conf -Lf /dev/null &
+# ── Upstream: route to the Internet and NPTv6 (RFC 6296) ─────────────────────
+# All hosts share LAN_PREFIX; each router rewrites it to its own ISP prefix,
+# so the web server can tell which ISP a connection came through.
+ip -6 route replace "$INTERNET_PREFIX" via "$WEB_SERVER" dev "$WAN_IF"
+ip6tables -t mangle -A POSTROUTING -o "$WAN_IF" -s "$LAN_PREFIX" -j SNPT \
+    --src-pfx "$LAN_PREFIX" --dst-pfx "$ISP_PREFIX"
+ip6tables -t mangle -A PREROUTING -i "$WAN_IF" -d "$ISP_PREFIX" -j DNPT \
+    --src-pfx "$ISP_PREFIX" --dst-pfx "$LAN_PREFIX"
 
-# Baseline RA config (config #0): multicast to all hosts on the internal
-# segment, DRP=medium.  The RA controller pushes per-host unicast configs
-# (ID ≥ 1) via gRPC when a policy is applied.
-cat > /config.yaml <<EOF
+# ── Internal: two link-local addresses ───────────────────────────────────────
+# BASE_LL sends the baseline RA (all hosts, preference medium). POLICY_LL
+# sends only the policy RAs. A host keeps one default-router entry per source
+# address, so the two never overwrite each other.
+BASE_LL=$(ip -6 addr show dev "$LAN_IF" scope link | awk '/inet6/ {sub("/.*", "", $2); print $2; exit}')
+if [ -z "$BASE_LL" ]; then
+    echo "[$HOSTNAME] $LAN_IF has no link-local address" >&2
+    exit 1
+fi
+ip -6 addr replace "${POLICY_LL}/64" dev "$LAN_IF" nodad
+LAN_ADDR=$(ip -6 addr show dev "$LAN_IF" scope global | awk '/inet6/ {sub("/.*", "", $2); print $2; exit}')
+
+# Baseline RA (config #0). sourceAddress is set explicitly because the
+# interface now has two link-local addresses. The controller adds the policy
+# configurations (ID >= 1) over gRPC.
+cat > /config.yaml <<YAML
 interfaces:
 - id: 0
-  name: ${IFACE}
-  raIntervalMilliseconds: ${RA_INTERVAL_MS:-3000}
+  description: baseline
+  name: ${LAN_IF}
+  sourceAddress: ${BASE_LL}
+  raIntervalMilliseconds: ${RA_INTERVAL_MS}
   currentHopLimit: 64
   preference: medium
   routerLifetimeSeconds: 1800
   reachableTimeMilliseconds: 30000
   retransmitTimeMilliseconds: 1000
-  disableRSReply: false
   prefixes:
-  - prefix: "fc00:cafe:dead:beef::/64"
+  - prefix: "${LAN_PREFIX}"
     onLink: true
     autonomous: true
     validLifetimeSeconds: 2592000
     preferredLifetimeSeconds: 604800
-EOF
+YAML
 
-# Self-register with the RA controller once it becomes reachable.
-# The hostname (router1/2/3) is the address the controller uses to connect via
-# gRPC, and IFACE is the internal interface detected above.
-HOSTNAME=$(hostname)
-case "$HOSTNAME" in
-    router1) ROUTER_LABEL="Router(a)" ;;
-    router2) ROUTER_LABEL="Router(b)" ;;
-    router3) ROUTER_LABEL="Router(c)" ;;
-    *)       ROUTER_LABEL="$HOSTNAME" ;;
-esac
-
-# Use the static GUA on the internal interface as the router address so it
-# appears as a real IPv6 address in the UI (not a Docker hostname).
-INTERNAL_ADDR=$(ip -6 addr show dev "${IFACE}" 2>/dev/null \
-    | awk '/fc00:cafe:dead:beef/ {sub("/.*","", $2); print $2; exit}')
-ROUTER_ADDR="${INTERNAL_ADDR:-${HOSTNAME}}"
-
-(
-    until curl -sf "http://controller-backend:8080/api/routers" >/dev/null 2>&1; do
-        sleep 2
-    done
-    if curl -sf "http://controller-backend:8080/api/routers" 2>/dev/null \
-       | grep -q "\"address\":\"${ROUTER_ADDR}\""; then
-        echo "[${HOSTNAME}] already registered (${ROUTER_ADDR})"
-    else
-        curl -sf -X POST "http://controller-backend:8080/api/routers" \
-            -H "Content-Type: application/json" \
-            -d "{\"name\":\"${ROUTER_LABEL}\",\"address\":\"${ROUTER_ADDR}\",\"interface\":\"${IFACE}\",\"ra_interval_milliseconds\":3000,\"current_hop_limit\":64,\"router_lifetime_seconds\":1800,\"reachable_time_milliseconds\":30000,\"retransmit_time_milliseconds\":1000}" \
-            >/dev/null 2>&1 \
-        && echo "[${HOSTNAME}] registered address=${ROUTER_ADDR} if=${IFACE}" \
-        || echo "[${HOSTNAME}] registration failed" >&2
-    fi
-    # Tell the neighbor-collector which interface is the internal segment and
-    # this router's own link-local, so it can correctly classify router entries.
-    SELF_LL=$(ip -6 addr show dev "${IFACE}" 2>/dev/null \
-              | awk '/inet6 fe80/ {sub("/.*","", $2); print $2; exit}')
-    until curl -sf "http://neighbor-collector:8083/api/neighbors" >/dev/null 2>&1; do
-        sleep 2
-    done
-    curl -sf -X PUT "http://neighbor-collector:8083/api/targets/${HOSTNAME}" \
-        -H "Content-Type: application/json" \
-        -d "{\"ifname\":\"${IFACE}\",\"self_ll\":\"${SELF_LL}\",\"label\":\"${ROUTER_LABEL}\"}" >/dev/null 2>&1 \
-    && echo "[${HOSTNAME}] neighbor-collector ifname=${IFACE} label=${ROUTER_LABEL}" \
-    || echo "[${HOSTNAME}] neighbor-collector update failed" >&2
-) &
-
-# Ping the all-nodes multicast group to warm up the NDP table.
-sleep 1
-ping6 -c 5 "ff02::1%${IFACE}" >/dev/null 2>&1 || true
-
-# Periodically re-ping to keep NDP entries alive for SNMP collection.
+# ── Neighbor discovery for the Clients tab ───────────────────────────────────
+# snmpd exposes the NDP cache (RFC 4293 ipNetToPhysicalTable); pinging the
+# all-nodes group keeps the cache populated.
+mkdir -p /etc/snmp
+printf 'rocommunity  public default\nrocommunity6 public default\n' > /etc/snmp/snmpd.conf
+snmpd -C -c /etc/snmp/snmpd.conf -Lf /dev/null &
 (while true; do
-    sleep 25
-    ping6 -c 3 "ff02::1%${IFACE}" >/dev/null 2>&1 || true
+    ping6 -c 2 -I "$BASE_LL" "ff02::1%${LAN_IF}" >/dev/null 2>&1 || true
+    sleep 20
 done) &
 
-# -a 0.0.0.0:50051 makes the gRPC server reachable from the controller
+# ── Self-registration ────────────────────────────────────────────────────────
+# Repeated, so that the router re-registers after the controller (whose
+# database is in memory) is restarted.
+(
+    api="http://controller-backend:8080/api"
+    nc="http://neighbor-collector:8083/api"
+    while true; do
+        if routers=$(curl -sf "$api/routers" 2>/dev/null) \
+           && ! echo "$routers" | grep -q "\"address\":\"${LAN_ADDR}\""; then
+            curl -sf -X POST "$api/routers" -H "Content-Type: application/json" -d "{
+                \"name\": \"${ROUTER_LABEL}\", \"address\": \"${LAN_ADDR}\",
+                \"interface\": \"${LAN_IF}\", \"policy_source_address\": \"${POLICY_LL}\",
+                \"ra_interval_milliseconds\": ${RA_INTERVAL_MS}, \"current_hop_limit\": 64,
+                \"router_lifetime_seconds\": 1800,
+                \"reachable_time_milliseconds\": 30000, \"retransmit_time_milliseconds\": 1000
+            }" >/dev/null \
+                && echo "[$HOSTNAME] registered ${ROUTER_LABEL} address=${LAN_ADDR} if=${LAN_IF} policy-ll=${POLICY_LL}" \
+                || echo "[$HOSTNAME] registration failed" >&2
+        fi
+        # Tell the neighbor collector which interface faces the hosts and
+        # which address is the router itself.
+        curl -sf -X PUT "$nc/targets/${HOSTNAME}" -H "Content-Type: application/json" \
+            -d "{\"ifname\":\"${LAN_IF}\",\"self_ll\":\"${BASE_LL}\",\"label\":\"${ROUTER_LABEL}\"}" \
+            >/dev/null 2>&1 || true
+        sleep 5
+    done
+) &
+
+echo "[$HOSTNAME] ${ROUTER_LABEL}: lan=${LAN_IF} wan=${WAN_IF} isp=${ISP_PREFIX} base-ll=${BASE_LL} policy-ll=${POLICY_LL}"
+# 0.0.0.0 makes the gRPC server reachable from the controller.
 exec /gorad -f /config.yaml -a 0.0.0.0:50051
