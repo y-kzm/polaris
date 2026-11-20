@@ -1,5 +1,5 @@
 BINARY   := ra-controller
-GO       := GOTOOLCHAIN=local go
+GO       := go
 BUILD    := $(GO) build -o $(BINARY) ./cmd/server/
 
 .PHONY: build run clean tidy

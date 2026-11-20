@@ -54,4 +54,3 @@ func (s *NeighborStore) Replace(neighbors []Neighbor) error {
 	}
 	return tx.Commit()
 }
-
