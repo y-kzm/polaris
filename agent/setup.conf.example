@@ -7,7 +7,7 @@
 # One KEY=VALUE per line. A value may be quoted; text after " #" is a comment.
 # An environment variable of the same name overrides the file.
 
-# ── NPTv6 ────────────────────────────────────────────────────────────────────
+# ── NPTv6 (required: these three have no default) ────────────────────────────
 WAN_IF=enp1s0                     # upstream interface
 WAN_PREFIX=2001:db8:a::/64        # the /64 the ISP delegated to this router
 LAN_PREFIX=fd00:1::/64            # the site prefix (the same on every site-exit router)
@@ -17,16 +17,18 @@ LAN_PREFIX=fd00:1::/64            # the site prefix (the same on every site-exit
 # preference medium to all hosts, no routes. Without LAN_IF, the sample
 # config.yaml of go-ra is installed and has to be edited by hand.
 LAN_IF=enp2s0                     # interface towards the hosts
-RA_INTERVAL_MS=600000             # interval of the unsolicited baseline RA
-ROUTER_LIFETIME_S=1800
-RA_MTU=1500                       # 0: no MTU option
+
+# The values below are the defaults of RFC 4861 (Section 6.2.1) and RFC 8106.
+RA_INTERVAL_MS=600000             # MaxRtrAdvInterval. gorad sends at this fixed interval
+ROUTER_LIFETIME_S=1800            # AdvDefaultLifetime = 3 * MaxRtrAdvInterval
+RA_MTU=0                          # AdvLinkMTU. 0: no MTU option; e.g. 1500 to advertise it
+PREFIX_VALID_S=2592000            # AdvValidLifetime, 30 days
+PREFIX_PREFERRED_S=604800         # AdvPreferredLifetime, 7 days
+CUR_HOP_LIMIT=64                  # AdvCurHopLimit
+REACHABLE_TIME_MS=0               # AdvReachableTime. 0: unspecified by this router
+RETRANS_TIME_MS=0                 # AdvRetransTimer. 0: unspecified by this router
 RDNSS=                            # DNS servers, comma-separated (e.g. 2001:db8::53); empty: no RDNSS option
-RDNSS_LIFETIME_S=1800
-PREFIX_VALID_S=2592000            # 30 days
-PREFIX_PREFERRED_S=604800         # 7 days
-CUR_HOP_LIMIT=64
-REACHABLE_TIME_MS=0               # 0: unspecified by this router
-RETRANS_TIME_MS=0                 # 0: unspecified by this router
+RDNSS_LIFETIME_S=1800             # RFC 8106: 3 * MaxRtrAdvInterval
 
 # An existing config.yaml is kept. "yes" writes it again from the settings
 # above; the previous file is kept as config.yaml.bak-<date>.

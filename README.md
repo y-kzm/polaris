@@ -90,9 +90,9 @@ sysctls, and installs `gora` as a systemd service.
 ```bash
 cd agent
 git submodule update --init
-sudo WAN_PREFIX=2001:db8:wan::/64  \
-     LAN_PREFIX=fc00:cafe::/64     \
-     WAN_IF=eth0  ./setup.sh
+cp setup.conf.example setup.conf     # then edit: WAN_IF, WAN_PREFIX, LAN_PREFIX, LAN_IF, ...
+sudo ./setup.sh --print-config      # shows what would be written; changes nothing
+sudo ./setup.sh
 ```
 
 See [`agent/README.md`](agent/README.md) for the operational guide.

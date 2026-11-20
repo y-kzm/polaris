@@ -139,16 +139,21 @@ sudo ./setup.sh
 そうでない場合、`setup.sh` は読み込みを拒否します。
 ファイルは 1 行に 1 つの `KEY=VALUE` です。同じ名前の環境変数があればファイルより優先されるので、
 1 つだけ変えたいときは従来どおり `sudo RA_INTERVAL_MS=400000 ./setup.sh` のように指定できます。
+`WAN_IF`、`WAN_PREFIX`、`LAN_PREFIX` には既定値がありません。どれかが未設定の場合、`setup.sh` は
+何も変更する前に停止します。
+
+チェックアウトは、自分だけが書き込めるディレクトリに置いてください。`setup.sh` とその設定ファイルは
+root として実行・読み込みされます。
 
 | 設定 | デフォルト値 | 説明 |
 |------|-------------|------|
-| `WAN_IF` | `enp2s0` | WAN 側ネットワークインタフェース |
-| `WAN_PREFIX` | `2001:2f8:1c0:7040::/64` | NPTv6 の WAN 側 IPv6 プレフィックス |
-| `LAN_PREFIX` | `2001:cafe:dead:beef::/64` | NPTv6 の LAN 側 IPv6 プレフィックス。ベースライン RA で広告する |
+| `WAN_IF` | （必須） | WAN 側ネットワークインタフェース |
+| `WAN_PREFIX` | （必須） | NPTv6 の WAN 側 IPv6 プレフィックス。ISP からこのルータに委譲された /64 |
+| `LAN_PREFIX` | （必須） | NPTv6 の LAN 側 IPv6 プレフィックス。ベースライン RA で広告する |
 | `LAN_IF` | （空） | ホスト側のインタフェース。設定すると、`setup.sh` がベースライン RA の設定を書き出す |
-| `RA_INTERVAL_MS` | `600000` | ベースライン RA の送信間隔 |
+| `RA_INTERVAL_MS` | `600000` | ベースライン RA の送信間隔（MaxRtrAdvInterval。gorad はこの固定間隔で送る） |
 | `ROUTER_LIFETIME_S` | `1800` | ベースライン RA の Router Lifetime |
-| `RA_MTU` | `1500` | MTU オプション。`0` で省略 |
+| `RA_MTU` | `0` | MTU オプション（AdvLinkMTU）。`0` で省略 |
 | `RDNSS` | （空） | DNS サーバ（カンマ区切り）。空ならオプションを付けない |
 | `RDNSS_LIFETIME_S` | `1800` | RDNSS オプションの lifetime |
 | `PREFIX_VALID_S` / `PREFIX_PREFERRED_S` | `2592000` / `604800` | プレフィクスの lifetime |
@@ -159,6 +164,8 @@ sudo ./setup.sh
 | `INSTALL_DIR` | `/opt/go-ra-server` | インストール先ディレクトリ |
 | `GO` | （自動で探す） | Go コンパイラのパス。`sudo` は `PATH` を引き継がないので、`setup.sh` は `/usr/local/go/bin` と実行ユーザーの Go のディレクトリも探す。別の場所にある場合は `GO` で指定する。ビルドは root ではなく、`sudo` を実行したユーザーの権限で行う |
 | `GRPC_ADDR` | `localhost:50051` | gorad の gRPC リッスンアドレス |
+
+ベースライン RA の既定値は、RFC 4861（6.2.1 節）と RFC 8106 の既定値です。
 
 **3. RA 設定**
 
