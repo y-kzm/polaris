@@ -49,3 +49,6 @@ controller/data/
 # conflict copies made by file-sync tools ("name 2.go")
 * [2-9].*
 * [2-9]
+
+# Site-specific settings of agent/setup.sh
+agent/setup.conf

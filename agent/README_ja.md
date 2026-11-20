@@ -18,6 +18,7 @@
 | `go-ra/` | go-ra ソース（git サブモジュール — YutaroHayakawa/go-ra のフォーク） |
 | `systemd/go-ra-server.service` | systemd ユニットファイル |
 | `setup.sh` | 初回セットアップスクリプト |
+| `setup.conf.example` | `setup.sh` の設定ファイルの見本（`setup.conf` にコピーして編集） |
 
 `setup.sh` 実行後、`config.yaml` が `$INSTALL_DIR`（デフォルト: `/opt/go-ra-server`）にデプロイされます。
 
@@ -92,21 +93,23 @@ interfaces:
 LAN 側インターフェースに 2 つ目のリンクローカルアドレスを付け、
 ポリシー RA 専用にします。
 
-`setup.sh` は、次の 2 つの変数が両方設定されているときにこれを行います。
+`setup.sh` は、`POLICY_LL`（と `LAN_IF`）が設定されているときにこれを行います。
+設定ファイルでの例：
 
-```bash
-sudo LAN_IF=eth1 POLICY_LL=fe80::face:1 \
-     WAN_PREFIX=... LAN_PREFIX=... WAN_IF=eth0 ./setup.sh
+```
+LAN_IF=eth1
+POLICY_LL=fe80::face:1
 ```
 
 サービスの起動前に毎回 `POLICY_LL` を `LAN_IF` に割り当てる systemd の drop-in を
-インストールします。残る手作業は次の 2 つで、`setup.sh` が表示します。
+インストールし、`config.yaml` のベースラインのインスタンスに、インターフェース本来の
+リンクローカルアドレスを `sourceAddress` として書き込みます
+（リンクローカルが 2 つあると、省略時にどちらが使われるかは決まっていないため、明示が必要です）。
+残る手作業は 1 つです。RA コントローラで、そのルータの **Policy RA source address** に
+`POLICY_LL` を設定してください。
 
-1. `config.yaml` のベースラインのインスタンスに、インターフェース本来の
-   リンクローカルアドレスを `sourceAddress` として設定する。
-   リンクローカルが 2 つあると、省略時にどちらが使われるかは決まっていません
-   （後から追加したアドレスが使われることがあります）。必ず明示してください。
-2. RA コントローラで、そのルータの **Policy RA source address** に `POLICY_LL` を設定する。
+既存の `config.yaml` を残す場合は、ベースラインのインスタンスに `sourceAddress` を
+自分で追加してください。無い場合は `setup.sh` が警告します。
 
 `POLICY_LL` はリンク上で一意である必要があります。未使用の `fe80::/64` のアドレスなら何でも構いません。
 コントローラは、ベースラインと同じアドレスをポリシー用に指定した場合、適用を拒否します。
@@ -121,26 +124,48 @@ sudo LAN_IF=eth1 POLICY_LL=fe80::face:1 \
 git submodule update --init
 ```
 
-**2. NPTv6 パラメータを設定して setup を実行**
+**2. 設定ファイルを書いて setup を実行**
 
 ```bash
-sudo WAN_PREFIX="2001:db8:wan::/64" \
-     LAN_PREFIX="fd00:cafe::/64"    \
-     WAN_IF="eth0"                  \
-     ./setup.sh
+cp setup.conf.example setup.conf
+nano setup.conf                      # インターフェース、プレフィクス、ベースライン RA、ポリシー用アドレス
+sudo ./setup.sh --print-config       # 設定と、書き出す config.yaml を表示するだけ(何も変更しない)
+sudo ./setup.sh
 ```
 
-`setup.sh` は以下の環境変数を受け付けます：
+`setup.sh` は `./setup.conf` があれば読み込みます（別のファイルは `-c FILE`）。
+ファイルは 1 行に 1 つの `KEY=VALUE` です。同じ名前の環境変数があればファイルより優先されるので、
+1 つだけ変えたいときは従来どおり `sudo RA_INTERVAL_MS=400000 ./setup.sh` のように指定できます。
 
-| 変数名 | デフォルト値 | 説明 |
-|--------|-------------|------|
+| 設定 | デフォルト値 | 説明 |
+|------|-------------|------|
+| `WAN_IF` | `enp2s0` | WAN 側ネットワークインタフェース |
+| `WAN_PREFIX` | `2001:2f8:1c0:7040::/64` | NPTv6 の WAN 側 IPv6 プレフィックス |
+| `LAN_PREFIX` | `2001:cafe:dead:beef::/64` | NPTv6 の LAN 側 IPv6 プレフィックス。ベースライン RA で広告する |
+| `LAN_IF` | （空） | ホスト側のインタフェース。設定すると、`setup.sh` がベースライン RA の設定を書き出す |
+| `RA_INTERVAL_MS` | `600000` | ベースライン RA の送信間隔 |
+| `ROUTER_LIFETIME_S` | `1800` | ベースライン RA の Router Lifetime |
+| `RA_MTU` | `1500` | MTU オプション。`0` で省略 |
+| `RDNSS` | （空） | DNS サーバ（カンマ区切り）。空ならオプションを付けない |
+| `RDNSS_LIFETIME_S` | `1800` | RDNSS オプションの lifetime |
+| `PREFIX_VALID_S` / `PREFIX_PREFERRED_S` | `2592000` / `604800` | プレフィクスの lifetime |
+| `CUR_HOP_LIMIT` | `64` | ホストに広告する hop limit |
+| `REACHABLE_TIME_MS` / `RETRANS_TIME_MS` | `0` / `0` | `0` はルータが指定しないことを表す |
+| `POLICY_LL` | （空） | ポリシー RA の送信元アドレス（上記）。`LAN_IF` が必要 |
+| `OVERWRITE_CONFIG` | `no` | `yes` で `config.yaml` を書き直す。以前のファイルは `config.yaml.bak-<日時>` として残す |
 | `INSTALL_DIR` | `/opt/go-ra-server` | インストール先ディレクトリ |
 | `GRPC_ADDR` | `localhost:50051` | gorad の gRPC リッスンアドレス |
-| `WAN_PREFIX` | `2001:2f8:1c0:7040::/64` | NPTv6 の WAN 側 IPv6 プレフィックス |
-| `LAN_PREFIX` | `2001:cafe:dead:beef::/64` | NPTv6 の LAN 側 IPv6 プレフィックス |
-| `WAN_IF` | `enp2s0` | WAN 側ネットワークインタフェース |
 
-**3. RA 設定を編集**
+**3. RA 設定**
+
+`LAN_IF` を設定すると、`setup.sh` はベースライン RA だけの `config.yaml` を書き出します。
+内容は、全ホスト宛てに `LAN_PREFIX` を優先度 medium で広告し、設定があれば MTU と RDNSS の
+オプションを付け、経路は含めない、というものです。ポリシーの設定はコントローラが gRPC で追加し、
+このファイルには保存されません。
+
+既存の `config.yaml` は、`OVERWRITE_CONFIG=yes` を指定しない限り変更されません。
+`LAN_IF` を設定しない場合は go-ra の見本の `config.yaml` が置かれます。これは例
+（インタフェース `eth0`、文書用プレフィクス、見本の経路）なので、使う前に編集が必要です。
 
 ```bash
 sudo nano /opt/go-ra-server/config.yaml
