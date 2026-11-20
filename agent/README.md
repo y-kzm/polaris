@@ -19,6 +19,7 @@ The `setup.sh` script handles the full one-time setup:
 | `systemd/go-ra-server.service` | Systemd unit file |
 | `setup.sh` | One-time setup script |
 | `setup.conf.example` | Example of the settings file of `setup.sh` (copy to `setup.conf` and edit) |
+| `setup.conf.paper.example` | The same, filled in for the configuration evaluated in the paper (baseline RA every 400 s with MTU and RDNSS, single RA source address) |
 
 After `setup.sh` runs, `config.yaml` is deployed to `$INSTALL_DIR` (default `/opt/go-ra-server`).
 

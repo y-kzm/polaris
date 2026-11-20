@@ -1,0 +1,49 @@
+# Settings of agent/setup.sh for the configuration evaluated in the paper
+# (Section 5: two site-exit routers, 200 hosts, baseline RA every 400 s).
+#
+#   cp setup.conf.paper.example setup.conf     # on each site-exit router, then edit the marked lines
+#   sudo ./setup.sh --print-config             # show what would be written; changes nothing
+#   sudo ./setup.sh
+#
+# Lines marked EDIT differ per router or per site. The other values are
+# those of the paper and are the same on every router.
+
+# ── NPTv6 ────────────────────────────────────────────────────────────────────
+WAN_IF=enp1s0                     # EDIT: upstream interface of this router
+WAN_PREFIX=2001:db8:a::/64        # EDIT: the /64 this router's ISP delegated
+                                  #       (Router(a): ISP-A's prefix, Router(b): ISP-B's)
+LAN_PREFIX=fd00:1::/64            # EDIT: the site prefix; the SAME on Router(a) and Router(b)
+
+# ── Baseline RA (Configuration #0 of the paper) ──────────────────────────────
+# Prefix, MTU and DNS server options, preference medium, no routes: the frame
+# is 142 bytes (Ethernet 14 + IPv6 40 + RA 16 + source link-layer address 8 +
+# MTU 8 + prefix 32 + RDNSS with one address 24), the L_ra,base of Equation 3.
+LAN_IF=enp2s0                     # EDIT: interface towards the hosts
+RA_INTERVAL_MS=400000             # Δt = 400 s: the middle of MinRtrAdvInterval and MaxRtrAdvInterval
+ROUTER_LIFETIME_S=1800
+RA_MTU=1500
+RDNSS=2001:db8::53                # EDIT: one DNS server address (a second address adds 16 bytes)
+RDNSS_LIFETIME_S=1800
+PREFIX_VALID_S=2592000
+PREFIX_PREFERRED_S=604800
+CUR_HOP_LIMIT=64
+REACHABLE_TIME_MS=0
+RETRANS_TIME_MS=0
+
+OVERWRITE_CONFIG=no               # yes: replace an existing config.yaml (a backup is kept)
+
+# ── Policy RA source address ─────────────────────────────────────────────────
+# Empty: the policy RAs are sent from the same link-local address as the
+# baseline RA. This is the design evaluated in the paper. In the controller,
+# leave this router's policy source address empty as well.
+# (With this design a baseline RA resets a high preference until the next
+# policy RA; see Section 3.1 of the paper.)
+POLICY_LL=
+
+# ── Service ──────────────────────────────────────────────────────────────────
+INSTALL_DIR=/opt/go-ra-server
+GRPC_ADDR=[2001:db8:ffff::a]:50051   # EDIT: this router's address on the management network, where
+                                  #       the RA controller reaches gorad. The channel is not
+                                  #       authenticated: do not use an address the hosts can reach
+                                  #       ([::]:50051 would listen on the hosts' link as well).
+GO=
