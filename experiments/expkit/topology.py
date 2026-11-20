@@ -28,10 +28,23 @@ CTL_MGMT = "fd00:ffff::1"
 
 # A veth pair is created under temporary names and then moved: creating it
 # directly under its final name fails if this namespace already has, say, eth0.
-VETH = """veth() {  # namespace1 name1 namespace2-or-empty name2 [mac1]
-  ip link add pxtmp0 ${5:+address $5} type veth peer name pxtmp1
+#
+# Every end gets its address after the move. udev may give an interface an
+# address derived from its name (MACAddressPolicy=persistent); since all pairs
+# are created as pxtmp0/pxtmp1, several interfaces could otherwise end up with
+# the same address on one bridge.
+VETH = """pxmac() { printf '06:%s' "$(od -An -N5 -tx1 /dev/urandom | tr -s ' \\n' ':' | sed 's/^://; s/:$//')"; }
+veth() {  # namespace1 name1 namespace2-or-empty name2 [mac1]
+  ip link add pxtmp0 type veth peer name pxtmp1
   ip link set pxtmp0 netns "$1" name "$2"
-  if [ -n "$3" ]; then ip link set pxtmp1 netns "$3" name "$4"; else ip link set pxtmp1 name "$4"; fi
+  ip -n "$1" link set "$2" address "${5:-$(pxmac)}"
+  if [ -n "$3" ]; then
+    ip link set pxtmp1 netns "$3" name "$4"
+    ip -n "$3" link set "$4" address "$(pxmac)"
+  else
+    ip link set pxtmp1 name "$4"
+    ip link set "$4" address "$(pxmac)"
+  fi
 }"""
 
 
