@@ -14,6 +14,7 @@ from .node import Machine, Node
 from .policy import EMPTY, HostState, Scenario, expected, mismatches, parse_snapshot
 
 GRPC_PORT = 50051
+BASELINE_RDNSS = "2001:db8::53"  # advertised in the baseline RA; nothing resolves names in the experiments
 
 
 @dataclass
@@ -151,6 +152,12 @@ class Site:
             f"  routerLifetimeSeconds: {ra.router_lifetime_s}\n"
             f"  reachableTimeMilliseconds: {ra.reachable_time_ms}\n"
             f"  retransmitTimeMilliseconds: {ra.retransmit_time_ms}\n"
+            # As in the paper, the baseline carries the options a host needs
+            # for basic IPv6 use: prefix, MTU and DNS server.
+            "  mtu: 1500\n"
+            "  rdnsses:\n"
+            "  - lifetimeSeconds: 1800\n"
+            f"    addresses: [\"{BASELINE_RDNSS}\"]\n"
             "  prefixes:\n"
             f"  - prefix: \"{self.cfg.lan_prefix}\"\n"
             "    onLink: true\n"
