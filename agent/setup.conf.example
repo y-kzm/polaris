@@ -1,0 +1,48 @@
+# Settings of agent/setup.sh. Copy to setup.conf and edit:
+#
+#   cp setup.conf.example setup.conf
+#   sudo ./setup.sh --print-config     # show what would be written; changes nothing
+#   sudo ./setup.sh                    # reads ./setup.conf (or: -c FILE)
+#
+# One KEY=VALUE per line. A value may be quoted; text after " #" is a comment.
+# An environment variable of the same name overrides the file.
+
+# ── NPTv6 ────────────────────────────────────────────────────────────────────
+WAN_IF=enp1s0                     # upstream interface
+WAN_PREFIX=2001:db8:a::/64        # the /64 the ISP delegated to this router
+LAN_PREFIX=fd00:1::/64            # the site prefix (the same on every site-exit router)
+
+# ── Baseline RA ──────────────────────────────────────────────────────────────
+# With LAN_IF, setup writes config.yaml for the baseline RA: LAN_PREFIX with
+# preference medium to all hosts, no routes. Without LAN_IF, the sample
+# config.yaml of go-ra is installed and has to be edited by hand.
+LAN_IF=enp2s0                     # interface towards the hosts
+RA_INTERVAL_MS=600000             # interval of the unsolicited baseline RA
+ROUTER_LIFETIME_S=1800
+RA_MTU=1500                       # 0: no MTU option
+RDNSS=                            # DNS servers, comma-separated (e.g. 2001:db8::53); empty: no RDNSS option
+RDNSS_LIFETIME_S=1800
+PREFIX_VALID_S=2592000            # 30 days
+PREFIX_PREFERRED_S=604800         # 7 days
+CUR_HOP_LIMIT=64
+REACHABLE_TIME_MS=0               # 0: unspecified by this router
+RETRANS_TIME_MS=0                 # 0: unspecified by this router
+
+# An existing config.yaml is kept. "yes" writes it again from the settings
+# above; the previous file is kept as config.yaml.bak-<date>.
+OVERWRITE_CONFIG=no
+
+# ── Policy RA source address ─────────────────────────────────────────────────
+# A second link-local address on LAN_IF, used only for the policy RAs that the
+# controller requests, so that they do not overwrite the baseline RA on the
+# hosts. Any unused fe80::/64 address. Enter the same address in the
+# controller as this router's policy source address.
+# Empty: policy RAs share the baseline address (the design of the paper as
+# submitted; a baseline RA then resets a high preference until the next
+# policy RA).
+POLICY_LL=
+
+# ── Service ──────────────────────────────────────────────────────────────────
+INSTALL_DIR=/opt/go-ra-server
+GO=                               # path of the Go compiler; empty: PATH, /usr/local/go/bin, ~/go/bin, ... are searched
+GRPC_ADDR=localhost:50051         # where gorad listens for the controller, e.g. [2001:db8:ffff::a]:50051

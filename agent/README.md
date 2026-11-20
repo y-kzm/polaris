@@ -18,6 +18,7 @@ The `setup.sh` script handles the full one-time setup:
 | `go-ra/` | go-ra source (git submodule — forked from YutaroHayakawa/go-ra) |
 | `systemd/go-ra-server.service` | Systemd unit file |
 | `setup.sh` | One-time setup script |
+| `setup.conf.example` | Example of the settings file of `setup.sh` (copy to `setup.conf` and edit) |
 
 After `setup.sh` runs, `config.yaml` is deployed to `$INSTALL_DIR` (default `/opt/go-ra-server`).
 
@@ -91,23 +92,23 @@ RA: a host keeps one default-router entry per source address, so the two
 would overwrite each other's preference and lifetime. Give the LAN-facing
 interface a second link-local address and use it only for policy RAs.
 
-`setup.sh` does this when both variables are set:
+`setup.sh` does this when `POLICY_LL` is set (together with `LAN_IF`), for
+example in the settings file:
 
-```bash
-sudo LAN_IF=eth1 POLICY_LL=fe80::face:1 \
-     WAN_PREFIX=... LAN_PREFIX=... WAN_IF=eth0 ./setup.sh
+```
+LAN_IF=eth1
+POLICY_LL=fe80::face:1
 ```
 
 It installs a systemd drop-in that assigns `POLICY_LL` to `LAN_IF` before
-every start of the service. Two manual steps remain, and `setup.sh` prints
-them:
+every start of the service, and it writes the interface's own link-local
+address as `sourceAddress` of the baseline instance in `config.yaml`. (With
+two link-local addresses, which one is used by default is not defined, so it
+has to be named.) One manual step remains: in the RA controller, set the
+router's **Policy RA source address** to `POLICY_LL`.
 
-1. In `config.yaml`, set `sourceAddress` on the baseline instance to the
-   interface's original link-local address. With two link-local addresses,
-   which one is used by default is not defined (it can be the one added
-   later), so always name it explicitly.
-2. In the RA controller, set the router's **Policy RA source address** to
-   `POLICY_LL`.
+If you keep an existing `config.yaml`, add `sourceAddress` to the baseline
+instance yourself; `setup.sh` warns when it is missing.
 
 `POLICY_LL` must be unique on the link. Any unused `fe80::/64` address works.
 The controller refuses to apply a policy if the policy address is also the
@@ -132,26 +133,51 @@ the controller must be upgraded together (`SendRA` is required).
 git submodule update --init
 ```
 
-**2. Set your NPTv6 parameters and run setup**
+**2. Write the settings file and run setup**
 
 ```bash
-sudo WAN_PREFIX="2001:db8:wan::/64" \
-     LAN_PREFIX="fd00:cafe::/64"    \
-     WAN_IF="eth0"                  \
-     ./setup.sh
+cp setup.conf.example setup.conf
+nano setup.conf                      # interfaces, prefixes, baseline RA, policy address
+sudo ./setup.sh --print-config       # shows the settings and the config.yaml it would write; changes nothing
+sudo ./setup.sh
 ```
 
-`setup.sh` accepts the following environment variables:
+`setup.sh` reads `./setup.conf` if it exists (`-c FILE` names another file).
+The file holds one `KEY=VALUE` per line. An environment variable of the same
+name overrides the file, so a single value can still be set on the command
+line: `sudo RA_INTERVAL_MS=400000 ./setup.sh`.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `INSTALL_DIR` | `/opt/go-ra-server` | Installation directory |
-| `GRPC_ADDR` | `localhost:50051` | gRPC listen address for gorad |
-| `WAN_PREFIX` | `2001:2f8:1c0:7040::/64` | WAN-side IPv6 prefix for NPTv6 |
-| `LAN_PREFIX` | `2001:cafe:dead:beef::/64` | LAN-side IPv6 prefix for NPTv6 |
+| Setting | Default | Description |
+|---------|---------|-------------|
 | `WAN_IF` | `enp2s0` | Network interface facing the WAN |
+| `WAN_PREFIX` | `2001:2f8:1c0:7040::/64` | WAN-side IPv6 prefix for NPTv6 |
+| `LAN_PREFIX` | `2001:cafe:dead:beef::/64` | LAN-side IPv6 prefix for NPTv6, advertised in the baseline RA |
+| `LAN_IF` | (empty) | Interface towards the hosts. When set, `setup.sh` writes the baseline RA configuration |
+| `RA_INTERVAL_MS` | `600000` | Interval of the unsolicited baseline RA |
+| `ROUTER_LIFETIME_S` | `1800` | Router Lifetime of the baseline RA |
+| `RA_MTU` | `1500` | MTU option; `0` omits it |
+| `RDNSS` | (empty) | DNS servers, comma-separated; empty omits the option |
+| `RDNSS_LIFETIME_S` | `1800` | Lifetime of the RDNSS option |
+| `PREFIX_VALID_S` / `PREFIX_PREFERRED_S` | `2592000` / `604800` | Lifetimes of the prefix |
+| `CUR_HOP_LIMIT` | `64` | Hop limit advertised to the hosts |
+| `REACHABLE_TIME_MS` / `RETRANS_TIME_MS` | `0` / `0` | `0`: unspecified by this router |
+| `POLICY_LL` | (empty) | Source address of the policy RAs (see above). Needs `LAN_IF` |
+| `OVERWRITE_CONFIG` | `no` | `yes`: write `config.yaml` again; the previous file is kept as `config.yaml.bak-<date>` |
+| `INSTALL_DIR` | `/opt/go-ra-server` | Installation directory |
+| `GO` | (searched) | Path of the Go compiler. `sudo` does not keep your `PATH`, so `setup.sh` also looks in `/usr/local/go/bin` and in the Go directories of the invoking user; set `GO` if it is elsewhere |
+| `GRPC_ADDR` | `localhost:50051` | gRPC listen address for gorad |
 
-**3. Edit the RA configuration**
+**3. The RA configuration**
+
+With `LAN_IF` set, `setup.sh` writes `config.yaml` with the baseline RA only:
+`LAN_PREFIX` with preference medium to all hosts, the MTU and RDNSS options if
+configured, and no routes. The controller adds the policy configurations over
+gRPC; they are not stored in the file.
+
+An existing `config.yaml` is never changed unless `OVERWRITE_CONFIG=yes`.
+Without `LAN_IF`, the sample `config.yaml` of go-ra is installed; it is an
+example (interface `eth0`, documentation prefixes, a sample route) and has to
+be edited before use:
 
 ```bash
 sudo nano /opt/go-ra-server/config.yaml
