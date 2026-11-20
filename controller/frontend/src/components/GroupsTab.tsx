@@ -1,22 +1,21 @@
-import { useRef, useState } from 'react';
-import { Plus, Trash2, ChevronDown, ChevronRight, Users, X, Pencil, Check } from 'lucide-react';
-import type { Group, Rule, Neighbor, RouterConfig } from '../types';
+import { useState } from 'react';
+import { Plus, Trash2, ChevronDown, ChevronRight, Pencil, Check } from 'lucide-react';
+import type { Group, Rule, Neighbor, RouterConfig, SourcesStatus } from '../types';
+import { errorMessage } from '../utils/api';
+import GroupForm from './GroupForm';
 
 interface GroupsTabProps {
   groups: Group[];
   rules: Rule[];
   routers: RouterConfig[];
   neighbors: Neighbor[];
-  newGroup: { name: string };
-  selectedNeighbors: string[];
-  expandedGroups: Record<number, boolean>;
-  onNewGroupChange: (group: { name: string }) => void;
-  onSelectedNeighborsChange: (neighbors: string[]) => void;
-  onAddGroup: () => void;
+  sources: SourcesStatus | null;
+  sourceDescription: string;
+  /** Creates (no id) or changes the name and members of a group. Rejects with the backend's message. */
+  onSaveGroup: (input: { name: string; members: string[] }, id?: number) => Promise<void>;
   onDeleteGroup: (id: number) => void;
-  onUpdateGroupRules: (id: number, rules: number[]) => void;
-  onToggleExpanded: (groupId: number) => void;
-  onOpenNeighborModal: () => void;
+  /** Rejects with the backend's message. */
+  onUpdateGroupRules: (id: number, rules: number[]) => Promise<void>;
 }
 
 /** Small LED dot for inline state summary */
@@ -29,32 +28,23 @@ export default function GroupsTab({
   rules,
   routers,
   neighbors,
-  newGroup,
-  selectedNeighbors,
-  expandedGroups,
-  onNewGroupChange,
-  onSelectedNeighborsChange,
-  onAddGroup,
+  sources,
+  sourceDescription,
+  onSaveGroup,
   onDeleteGroup,
   onUpdateGroupRules,
-  onToggleExpanded,
-  onOpenNeighborModal,
 }: GroupsTabProps) {
-  const manualMemberRef = useRef<HTMLInputElement>(null);
   const [showAddForm, setShowAddForm] = useState(false);
+  const [editingGroupId, setEditingGroupId] = useState<number | null>(null);
+  const [expandedGroups, setExpandedGroups] = useState<Record<number, boolean>>({});
   const [hoveredRuleId, setHoveredRuleId] = useState<number | null>(null);
   const [editingRulesGroupId, setEditingRulesGroupId] = useState<number | null>(null);
   const [editingRules, setEditingRules] = useState<number[]>([]);
+  const [rulesError, setRulesError] = useState<string | null>(null);
+  const [savingRules, setSavingRules] = useState(false);
 
-  const addManualMember = () => {
-    const input = manualMemberRef.current;
-    if (!input) return;
-    const addr = input.value.trim();
-    if (addr && !selectedNeighbors.includes(addr)) {
-      onSelectedNeighborsChange([...selectedNeighbors, addr]);
-      input.value = '';
-    }
-  };
+  const onToggleExpanded = (groupId: number) =>
+    setExpandedGroups(prev => ({ ...prev, [groupId]: !prev[groupId] }));
 
   // The Nexthop field can hold either router.id (UUID) or router.address.
   const routerName = (nexthop: string) =>
@@ -75,22 +65,28 @@ export default function GroupsTab({
   const startEditRules = (group: Group) => {
     setEditingRulesGroupId(group.id);
     setEditingRules([...group.rules]);
+    setRulesError(null);
   };
 
   const cancelEditRules = () => {
     setEditingRulesGroupId(null);
     setEditingRules([]);
+    setRulesError(null);
   };
 
-  const saveEditRules = (groupId: number) => {
-    onUpdateGroupRules(groupId, editingRules);
-    setEditingRulesGroupId(null);
-    setEditingRules([]);
-  };
-
-  const handleAddGroup = () => {
-    onAddGroup();
-    setShowAddForm(false);
+  // The assignment stays open until the backend accepted it.
+  const saveEditRules = async (groupId: number) => {
+    setSavingRules(true);
+    setRulesError(null);
+    try {
+      await onUpdateGroupRules(groupId, editingRules);
+      setEditingRulesGroupId(null);
+      setEditingRules([]);
+    } catch (e) {
+      setRulesError(errorMessage(e));
+    } finally {
+      setSavingRules(false);
+    }
   };
 
   return (
@@ -117,6 +113,19 @@ export default function GroupsTab({
         {groups.map(group => {
           const { reachable, stale, unknown } = clientStateSummary(group.members);
           const isEditingRules = editingRulesGroupId === group.id;
+          if (editingGroupId === group.id) {
+            return (
+              <GroupForm
+                key={group.id}
+                initial={group}
+                neighbors={neighbors}
+                sources={sources}
+                sourceDescription={sourceDescription}
+                onSubmit={async input => { await onSaveGroup(input, group.id); setEditingGroupId(null); }}
+                onCancel={() => setEditingGroupId(null)}
+              />
+            );
+          }
           return (
             <div key={group.id} className="border rounded-lg overflow-hidden">
               {/* Card header */}
@@ -125,12 +134,22 @@ export default function GroupsTab({
                   {group.name}
                   <span className="ml-2 text-xs text-gray-400 font-mono font-normal">#{group.id}</span>
                 </h3>
-                <button
-                  onClick={() => onDeleteGroup(group.id)}
-                  className="text-red-400 hover:text-red-600"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setEditingGroupId(group.id)}
+                    className="text-gray-400 hover:text-blue-600"
+                    title="Edit name and clients"
+                  >
+                    <Pencil className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => onDeleteGroup(group.id)}
+                    className="text-red-400 hover:text-red-600"
+                    title="Delete group"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
 
               <div className="px-4 py-3 space-y-3">
@@ -158,7 +177,7 @@ export default function GroupsTab({
                       ) : (
                         <div className="space-y-1.5 mb-3">
                           {rules.map(rule => {
-                            const isDefault = rule.entries.some(e => e.value === '::/0');
+                            const isDefault = rule.entries.some(e => e.type === 'ipv6' && e.value === '::/0');
                             const checked = editingRules.includes(rule.id);
                             return (
                               <label
@@ -191,7 +210,7 @@ export default function GroupsTab({
                                     </span>
                                   </div>
                                   <div className="text-xs text-gray-400 flex flex-wrap gap-x-3">
-                                    <span>{rule.entries.length} prefix{rule.entries.length !== 1 ? 'es' : ''}</span>
+                                    <span>{rule.entries.length} entr{rule.entries.length !== 1 ? 'ies' : 'y'}</span>
                                     <span>→ {routerName(rule.nexthop)}</span>
                                   </div>
                                 </div>
@@ -200,9 +219,15 @@ export default function GroupsTab({
                           })}
                         </div>
                       )}
+                      {rulesError && (
+                        <p className="mb-3 text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1.5 break-words">
+                          {rulesError}
+                        </p>
+                      )}
                       <div className="flex gap-2">
                         <button
                           onClick={() => saveEditRules(group.id)}
+                          disabled={savingRules}
                           className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-xs transition"
                         >
                           <Check className="w-3 h-3" />
@@ -223,7 +248,7 @@ export default function GroupsTab({
                       {group.rules.map(ruleId => {
                         const rule = rules.find(r => r.id === ruleId);
                         const label = rule?.comment || `#${ruleId}`;
-                        const isDefault = rule?.entries.some(e => e.value === '::/0');
+                        const isDefault = rule?.entries.some(e => e.type === 'ipv6' && e.value === '::/0');
                         const isHovered = hoveredRuleId === ruleId;
                         return (
                           <div key={ruleId} className="relative">
@@ -245,9 +270,11 @@ export default function GroupsTab({
                                 <p className="font-semibold text-gray-800 mb-1.5 truncate">{rule.comment || `Rule #${rule.id}`}</p>
                                 <div className="space-y-1 text-gray-600">
                                   <p><span className="text-gray-400">Router:</span>{' '}<span className="font-medium">{routerName(rule.nexthop)}</span></p>
-                                  <p><span className="text-gray-400">Prefixes:</span>{' '}<span className="font-medium">{rule.entries.length}</span></p>
+                                  <p><span className="text-gray-400">Entries:</span>{' '}<span className="font-medium">{rule.entries.length}</span></p>
                                   {rule.entries.slice(0, 3).map((e, i) => (
-                                    <p key={i} className="font-mono text-gray-400 truncate">{e.value}</p>
+                                    <p key={i} className="font-mono text-gray-400 truncate">
+                                      {e.type === 'service' ? `service: ${e.value}` : e.value}
+                                    </p>
                                   ))}
                                   {rule.entries.length > 3 && (
                                     <p className="text-gray-300">+{rule.entries.length - 3} more</p>
@@ -329,100 +356,15 @@ export default function GroupsTab({
         })}
       </div>
 
-      {/* Add form (toggled) */}
+      {/* Add form (toggled); it closes only after the backend accepted the group */}
       {showAddForm && (
-        <div className="border border-blue-200 rounded-lg p-5 bg-blue-50">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-semibold text-gray-700 text-sm">New Policy Group</h3>
-            <button
-              onClick={() => setShowAddForm(false)}
-              className="text-gray-400 hover:text-gray-600"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-
-          <div className="space-y-4">
-            {/* Group name */}
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Group Name</label>
-              <input
-                type="text"
-                value={newGroup.name}
-                onChange={e => onNewGroupChange({ ...newGroup, name: e.target.value })}
-                placeholder="e.g., Room-101"
-                className="w-full px-3 py-2 border rounded-lg text-sm bg-white"
-              />
-            </div>
-
-            {/* Client selection */}
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-2">Clients</label>
-              <div className="space-y-2">
-                <div className="flex gap-2">
-                  <input
-                    ref={manualMemberRef}
-                    type="text"
-                    placeholder="IPv6 address (e.g., fe80::1)"
-                    className="flex-1 px-3 py-2 border rounded-lg text-sm bg-white"
-                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addManualMember(); } }}
-                  />
-                  <button
-                    onClick={addManualMember}
-                    className="px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
-                  >
-                    <Plus className="w-4 h-4" />
-                  </button>
-                </div>
-                <button
-                  onClick={onOpenNeighborModal}
-                  className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 w-full text-sm justify-center transition"
-                >
-                  <Users className="w-4 h-4" />
-                  Select from ND Cache
-                </button>
-              </div>
-
-              {selectedNeighbors.length > 0 && (
-                <div className="mt-3 p-3 bg-white rounded-lg border">
-                  <p className="text-xs font-medium text-gray-600 mb-2">
-                    Selected ({selectedNeighbors.length})
-                  </p>
-                  <div className="flex flex-wrap gap-1">
-                    {selectedNeighbors.map(id => (
-                      <span key={id} className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs font-mono">
-                        {id}
-                        <button
-                          onClick={() => onSelectedNeighborsChange(selectedNeighbors.filter(n => n !== id))}
-                          className="text-blue-500 hover:text-blue-800 ml-0.5"
-                        >
-                          ×
-                        </button>
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="flex gap-2 pt-1">
-              <button
-                onClick={handleAddGroup}
-                disabled={!newGroup.name || selectedNeighbors.length === 0}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-sm transition"
-              >
-                <Plus className="w-4 h-4" />
-                Add Policy Group
-              </button>
-              <button
-                onClick={() => setShowAddForm(false)}
-                className="px-4 py-2 border rounded-lg hover:bg-white text-sm text-gray-600 transition"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
+        <GroupForm
+          neighbors={neighbors}
+          sources={sources}
+          sourceDescription={sourceDescription}
+          onSubmit={async input => { await onSaveGroup(input); setShowAddForm(false); }}
+          onCancel={() => setShowAddForm(false)}
+        />
       )}
     </div>
   );

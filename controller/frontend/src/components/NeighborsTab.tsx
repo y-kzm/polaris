@@ -1,19 +1,23 @@
 import { useState } from 'react';
 import { RefreshCw } from 'lucide-react';
-import type { Neighbor, Group } from '../types';
+import type { Neighbor, Group, SourcesStatus } from '../types';
 import { formatDateTime, neighborLedStatus } from '../utils/format';
 import StatusLed from './StatusLed';
+import SourceBanner from './SourceBanner';
 
 interface NeighborsTabProps {
   neighbors: Neighbor[];
   groups: Group[];
   sourceDescription: string;
+  sources: SourcesStatus | null;
+  /** Why GET /api/sources failed, if it did. */
+  sourcesError: string | null;
   onRefresh: () => void;
   isRefreshing: boolean;
   refreshCooldown: number; // seconds until the button re-enables
 }
 
-export default function NeighborsTab({ neighbors, groups, sourceDescription, onRefresh, isRefreshing, refreshCooldown }: NeighborsTabProps) {
+export default function NeighborsTab({ neighbors, groups, sourceDescription, sources, sourcesError, onRefresh, isRefreshing, refreshCooldown }: NeighborsTabProps) {
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(20);
 
@@ -57,6 +61,8 @@ export default function NeighborsTab({ neighbors, groups, sourceDescription, onR
           </button>
         </div>
       </div>
+
+      <SourceBanner kind="neighbors" sources={sources} sourcesError={sourcesError} />
 
       <div className="overflow-x-auto border rounded-lg">
         <table className="w-full">

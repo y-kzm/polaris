@@ -1,112 +1,126 @@
-import { useState } from 'react';
-import type { FqdnService, ServiceEndpoints } from '../../types';
+import { useEffect, useState } from 'react';
+import type { FqdnService, ServiceCatalog, ServiceEndpoints } from '../../types';
+import { errorMessage } from '../../utils/api';
+import SourceBanner from '../SourceBanner';
 
 interface FqdnModalProps {
-  fqdnServices: FqdnService[];
-  serviceEndpoints: Record<string, ServiceEndpoints>;
-  onSelectService: (service: FqdnService) => void;
-  onFetchEndpoints: (service: FqdnService) => void;
+  catalog: ServiceCatalog;
+  /** Called with the name of the chosen service. */
+  onSelectService: (serviceName: string) => void;
   onClose: () => void;
 }
 
-export default function FqdnModal({
-  fqdnServices,
-  serviceEndpoints,
-  onSelectService,
-  onFetchEndpoints,
-  onClose,
-}: FqdnModalProps) {
-  const [loadingServices, setLoadingServices] = useState<Set<string>>(new Set());
+type Preview =
+  | { status: 'loading' }
+  | { status: 'done'; endpoints: ServiceEndpoints }
+  | { status: 'error'; message: string };
 
-  const handleMouseEnter = async (service: FqdnService) => {
-    const key = service.service || service.name;
-    if (!key || serviceEndpoints[key] !== undefined) return;
-    setLoadingServices(prev => new Set(prev).add(key));
-    await onFetchEndpoints(service);
-    setLoadingServices(prev => { const next = new Set(prev); next.delete(key); return next; });
+const serviceKey = (service: FqdnService) => service.name || service.service || '';
+
+/**
+ * Service picker. Choosing a service adds ONE rule entry that names it; the
+ * backend looks its prefixes up at every apply. The endpoints shown here are
+ * a preview only.
+ */
+export default function FqdnModal({ catalog, onSelectService, onClose }: FqdnModalProps) {
+  const [previews, setPreviews] = useState<Record<string, Preview>>({});
+  const { reload, fetchEndpoints } = catalog;
+
+  // The list is read again every time the picker opens.
+  useEffect(() => { reload(); }, [reload]);
+
+  const loadPreview = async (key: string) => {
+    if (!key || previews[key]) return;
+    setPreviews(prev => ({ ...prev, [key]: { status: 'loading' } }));
+    try {
+      const endpoints = await fetchEndpoints(key);
+      setPreviews(prev => ({ ...prev, [key]: { status: 'done', endpoints } }));
+    } catch (e) {
+      setPreviews(prev => ({ ...prev, [key]: { status: 'error', message: errorMessage(e) } }));
+    }
   };
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
       <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[80vh] overflow-hidden">
         <div className="p-6 border-b">
-          <h2 className="text-xl font-bold">Select FQDN Service</h2>
+          <h2 className="text-xl font-bold">Select Service</h2>
           <p className="text-sm text-gray-600 mt-1">
-            Choose a service to add its IPv6 prefixes
+            The rule refers to the service by name. Its IPv6 prefixes are looked up by the
+            controller at every apply, so the rule follows the service when its prefixes change.
           </p>
         </div>
 
         {/* Service list */}
         <div className="overflow-y-auto max-h-[60vh] p-6">
-          {fqdnServices.length === 0 ? (
-            <div className="text-center py-12">
-              <div className="text-gray-400 mb-2">
-                <svg className="mx-auto h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"
-                  />
-                </svg>
+          <SourceBanner kind="endpoints" sources={catalog.sources} />
+          {catalog.error && (
+            <p className="mb-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2 break-words">
+              The services could not be listed: {catalog.error}
+            </p>
+          )}
+          {catalog.services.length === 0 ? (
+            !catalog.error && (
+              <div className="text-center py-12">
+                <p className="text-gray-500 font-medium">No services available</p>
+                <p className="text-sm text-gray-400 mt-1">No endpoint source is configured, or the sources know no service.</p>
               </div>
-              <p className="text-gray-500 font-medium">No FQDN services available</p>
-              <p className="text-sm text-gray-400 mt-1">The FQDN API service may be unavailable</p>
-            </div>
+            )
           ) : (
             <div className="space-y-3">
-              {fqdnServices.map((service, idx) => {
-                const serviceKey = service.service || service.name;
-                const displayName = service.name || service.service;
-                const endpoints = serviceEndpoints[serviceKey ?? ''];
+              {catalog.services.map(service => {
+                const key = serviceKey(service);
+                const preview = previews[key];
+                const endpoints = preview?.status === 'done' ? preview.endpoints : undefined;
+                const fqdns = endpoints?.fqdns ?? [];
 
                 return (
                   <div
-                    key={idx}
+                    key={key}
                     className="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition"
-                    onClick={() => onSelectService(service)}
-                    onMouseEnter={() => handleMouseEnter(service)}
+                    onClick={() => onSelectService(key)}
+                    onMouseEnter={() => loadPreview(key)}
                   >
                     <div className="flex items-start justify-between">
-                      <div className="flex-1">
-                        {/* Service name */}
-                        <div className="font-semibold text-lg mb-2">{displayName}</div>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold text-lg mb-2">{key}</div>
 
-                        {/* FQDN list preview */}
-                        {endpoints?.fqdns && endpoints.fqdns.length > 0 ? (
+                        {service.description && (
+                          <div className="text-sm text-gray-600 mb-2">{service.description}</div>
+                        )}
+
+                        {!preview && (
+                          <div className="text-xs text-gray-400 mb-2 italic">Hover to preview its endpoints...</div>
+                        )}
+                        {preview?.status === 'loading' && (
+                          <div className="text-xs text-gray-400 mb-2 italic">Loading...</div>
+                        )}
+                        {preview?.status === 'error' && (
+                          <div className="text-xs text-red-600 mb-2 break-words">{preview.message}</div>
+                        )}
+
+                        {fqdns.length > 0 && (
                           <div className="mb-2">
                             <div className="text-xs font-medium text-gray-700 mb-1">FQDNs:</div>
                             <div className="flex flex-wrap gap-1">
-                              {endpoints.fqdns.slice(0, 8).map((fqdn, i) => (
-                                <span key={i} className="px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded font-mono">
-                                  {fqdn}
+                              {fqdns.slice(0, 8).map(name => (
+                                <span key={name} className="px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded font-mono">
+                                  {name}
                                 </span>
                               ))}
-                              {endpoints.fqdns.length > 8 && (
+                              {fqdns.length > 8 && (
                                 <span className="px-2 py-0.5 bg-gray-100 text-gray-600 text-xs rounded">
-                                  +{endpoints.fqdns.length - 8} more
+                                  +{fqdns.length - 8} more
                                 </span>
                               )}
                             </div>
                           </div>
-                        ) : loadingServices.has(serviceKey ?? '') ? (
-                          <div className="text-xs text-gray-400 mb-2 italic">Loading...</div>
-                        ) : (
-                          <div className="text-xs text-gray-400 mb-2 italic">
-                            Hover to load FQDNs...
-                          </div>
                         )}
 
-                        {/* IPv6 prefix count */}
-                        {endpoints?.ipv6_prefixes && (
+                        {endpoints && (
                           <div className="text-xs text-gray-600">
-                            {endpoints.ipv6_prefixes.length} IPv6 prefix{endpoints.ipv6_prefixes.length !== 1 ? 'es' : ''}
-                          </div>
-                        )}
-
-                        {service.description && (
-                          <div className="text-sm text-gray-600 mb-2">
-                            {service.description}
+                            {(endpoints.ipv6_prefixes ?? []).length} IPv6 prefix
+                            {(endpoints.ipv6_prefixes ?? []).length !== 1 ? 'es' : ''} right now
                           </div>
                         )}
                       </div>
@@ -123,10 +137,7 @@ export default function FqdnModal({
 
         {/* Modal footer */}
         <div className="p-6 border-t flex justify-end gap-3">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 border rounded-lg hover:bg-gray-50"
-          >
+          <button onClick={onClose} className="px-4 py-2 border rounded-lg hover:bg-gray-50">
             Cancel
           </button>
         </div>

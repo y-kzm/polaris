@@ -1,32 +1,36 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { Network, RefreshCw, Settings, Eye, GitCompare, Save } from 'lucide-react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { Network, RefreshCw, Settings, ListChecks, Save } from 'lucide-react';
 
 import type {
   RouterConfig,
   RouterStatus,
+  RouterInput,
+  RouterDeleteResult,
   Rule,
+  RuleInput,
   Group,
+  GroupInput,
   Neighbor,
   FqdnService,
-  ServiceEndpoints,
-  Entry,
   RAInterfaceConfig,
+  SourcesStatus,
+  ServiceCatalog,
+  ApplyResult,
+  ApplyState,
 } from './types';
 
-import { getApiUrl } from './utils/api';
-import { generateYaml, generateYamlDiff, hasChanges } from './utils/yaml';
+import { api, errorMessage } from './utils/api';
 import { createNeighborProvider, createServiceProvider } from './providers';
+import { usePolicyPlan } from './hooks/usePolicyPlan';
 
 import RouterGrid from './components/RouterGrid';
 import NeighborsTab from './components/NeighborsTab';
 import RulesTab from './components/RulesTab';
 import GroupsTab from './components/GroupsTab';
-import FqdnModal from './components/modals/FqdnModal';
-import NeighborModal from './components/modals/NeighborModal';
 import RouterConfigModal from './components/modals/RouterConfigModal';
-import YamlPreviewModal from './components/modals/YamlPreviewModal';
-import YamlDiffModal from './components/modals/YamlDiffModal';
-import ConfirmModal from './components/modals/ConfirmModal';
+import PlanModal from './components/modals/PlanModal';
+import ApplyConfirmModal from './components/modals/ApplyConfirmModal';
+import ApplyResultModal from './components/modals/ApplyResultModal';
 import RAInterfaceModal from './components/modals/RAInterfaceModal';
 import NotificationStack, { type NotificationItem } from './components/NotificationStack';
 
@@ -39,79 +43,10 @@ const TAB_LABELS: Record<string, string> = {
   groups: 'Policy Groups',
 };
 
+// Seconds the Refresh button stays disabled after a poll of the sources.
+const REFRESH_COOLDOWN_SEC = 10;
+
 const RAControllerFrontend = () => {
-  // ── Routers ──────────────────────────────────────────────────────────────
-  const [routers, setRouters] = useState<RouterConfig[]>([]);
-  const [routerStatuses, setRouterStatuses] = useState<Record<string, RouterStatus>>({});
-  const [showRouterConfig, setShowRouterConfig] = useState(false);
-  const [newRouter, setNewRouter] = useState<Omit<RouterConfig, 'id' | 'status'>>({
-    name: '',
-    address: '',
-    interface: 'eth0',
-    policy_source_address: '',
-    ra_interval_milliseconds: 3000,
-    current_hop_limit: 64,
-    managed: false,
-    other: false,
-    router_lifetime_seconds: 1800,
-    reachable_time_milliseconds: 0,
-    retransmit_time_milliseconds: 0,
-  });
-
-  // ── RA Policy rules ───────────────────────────────────────────────────────
-  const [rules, setRules] = useState<Rule[]>([]);
-  const [newRule, setNewRule] = useState<{ comment: string; entries: Entry[]; nexthop: string }>({
-    comment: '',
-    entries: [],
-    nexthop: '',
-  });
-  const [newRuleEntry, setNewRuleEntry] = useState<Entry>({ type: 'ipv6', value: '' });
-
-  // ── Policy groups ─────────────────────────────────────────────────────────
-  const [groups, setGroups] = useState<Group[]>([]);
-  const [newGroup, setNewGroup] = useState<{ name: string }>({ name: '' });
-  const [expandedGroups, setExpandedGroups] = useState<Record<number, boolean>>({});
-
-  // ── Clients (neighbors) ───────────────────────────────────────────────────
-  const [neighbors, setNeighbors] = useState<Neighbor[]>([]);
-  const [selectedNeighbors, setSelectedNeighbors] = useState<string[]>([]);
-  const [showNeighborModal, setShowNeighborModal] = useState(false);
-  const [neighborSources, setNeighborSources] = useState<string>('loading...');
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [refreshCooldown, setRefreshCooldown] = useState(0);
-  const cooldownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // ── FQDN services ─────────────────────────────────────────────────────────
-  const [showFqdnModal, setShowFqdnModal] = useState(false);
-  const [fqdnServices, setFqdnServices] = useState<FqdnService[]>([]);
-  const [serviceEndpoints, setServiceEndpoints] = useState<Record<string, ServiceEndpoints>>({});
-
-  // ── UI ────────────────────────────────────────────────────────────────────
-  const [activeTab, setActiveTab] = useState('neighbors');
-  const [showYamlPreview, setShowYamlPreview] = useState(false);
-  const [showYamlDiff, setShowYamlDiff] = useState(false);
-  const [lastCheckedIndex, setLastCheckedIndex] = useState<number | null>(null);
-  const [expandedRules, setExpandedRules] = useState<Record<number, boolean>>({});
-  const [previousYaml, setPreviousYaml] = useState(() => generateYaml([], []));
-  const [showConfirmDeploy, setShowConfirmDeploy] = useState(false);
-
-  // ── RA Interface detail modal ─────────────────────────────────────────────
-  const [raInterfaceModal, setRaInterfaceModal] = useState<{
-    routerName: string;
-    interfaces: RAInterfaceConfig[];
-  } | null>(null);
-
-  const openRAInterfaceModal = async (routerId: string, routerName: string) => {
-    try {
-      const res = await fetch(`${getApiUrl()}/api/routers/${routerId}/interfaces`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const ifaces: RAInterfaceConfig[] = await res.json();
-      setRaInterfaceModal({ routerName, interfaces: ifaces });
-    } catch (e) {
-      notify(`Failed to fetch RA interfaces: ${(e as Error).message}`, 'error');
-    }
-  };
-
   // ── Notifications ─────────────────────────────────────────────────────────
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const notifySeq = useRef(0);
@@ -125,137 +60,181 @@ const RAControllerFrontend = () => {
   const dismissNotification = (id: number) =>
     setNotifications(prev => prev.filter(n => n.id !== id));
 
-  // ── Initialisation ────────────────────────────────────────────────────────
-  useEffect(() => {
-    loadNeighbors();
-    loadRules();
-    loadGroups();
-    loadRouters();
+  // ── State (everything below is what the backend answered) ────────────────
+  const [routers, setRouters] = useState<RouterConfig[]>([]);
+  const [routerStatuses, setRouterStatuses] = useState<Record<string, RouterStatus>>({});
+  const [rules, setRules] = useState<Rule[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [neighbors, setNeighbors] = useState<Neighbor[]>([]);
+  const [sources, setSources] = useState<SourcesStatus | null>(null);
+  const [sourcesError, setSourcesError] = useState<string | null>(null);
+  const [fqdnServices, setFqdnServices] = useState<FqdnService[]>([]);
+  const [servicesError, setServicesError] = useState<string | null>(null);
+
+  // The plan is computed by the backend; `pending` drives the "unapplied
+  // changes" indicator.
+  const { plan, error: planError, loading: planLoading, refresh: refreshPlan, refreshNow: refreshPlanNow } =
+    usePolicyPlan();
+
+  // ── UI ────────────────────────────────────────────────────────────────────
+  const [activeTab, setActiveTab] = useState('neighbors');
+  const [showRouterConfig, setShowRouterConfig] = useState(false);
+  const [showPlan, setShowPlan] = useState(false);
+  const [showConfirmDeploy, setShowConfirmDeploy] = useState(false);
+  const [applyState, setApplyState] = useState<ApplyState | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshCooldown, setRefreshCooldown] = useState(0);
+  const cooldownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [raInterfaceModal, setRaInterfaceModal] = useState<{
+    routerName: string;
+    interfaces: RAInterfaceConfig[];
+  } | null>(null);
+
+  // ── Loading ───────────────────────────────────────────────────────────────
+  const loadRouters = useCallback(async () => {
+    try {
+      setRouters((await api<RouterConfig[] | null>('/api/routers')) ?? []);
+    } catch (e) {
+      notify(`Failed to load routers: ${errorMessage(e)}`, 'error');
+    }
+  }, [notify]);
+
+  const loadRules = useCallback(async () => {
+    try {
+      setRules((await api<Rule[] | null>('/api/rules')) ?? []);
+    } catch (e) {
+      notify(`Failed to load policy rules: ${errorMessage(e)}`, 'error');
+    }
+  }, [notify]);
+
+  const loadGroups = useCallback(async () => {
+    try {
+      setGroups((await api<Group[] | null>('/api/groups')) ?? []);
+    } catch (e) {
+      notify(`Failed to load policy groups: ${errorMessage(e)}`, 'error');
+    }
+  }, [notify]);
+
+  const loadSources = useCallback(async () => {
+    try {
+      setSources(await api<SourcesStatus>('/api/sources'));
+      setSourcesError(null);
+    } catch (e) {
+      setSourcesError(errorMessage(e));
+    }
   }, []);
 
+  const loadNeighbors = useCallback(async () => {
+    try {
+      setNeighbors(await neighborProvider.fetchNeighbors());
+    } catch (e) {
+      notify(`Failed to load clients: ${errorMessage(e)}`, 'error');
+    }
+    await loadSources();
+  }, [notify, loadSources]);
+
+  const loadServices = useCallback(async () => {
+    try {
+      setFqdnServices(await serviceProvider.fetchServices());
+      setServicesError(null);
+    } catch (e) {
+      setServicesError(errorMessage(e));
+    }
+    // Listing the services is what tells the backend whether its endpoint
+    // sources answer.
+    await loadSources();
+  }, [loadSources]);
+
   useEffect(() => {
-    serviceProvider.fetchServices()
-      .then(services => setFqdnServices(services))
-      .catch(() => setFqdnServices([]));
-  }, []);
+    void loadRouters();
+    void loadRules();
+    void loadGroups();
+    void loadNeighbors();
+    void loadServices();
+  }, [loadRouters, loadRules, loadGroups, loadNeighbors, loadServices]);
 
   // Clean up cooldown timer on unmount.
   useEffect(() => () => {
     if (cooldownTimerRef.current) clearInterval(cooldownTimerRef.current);
   }, []);
 
-  useEffect(() => {
-    fetch(`${getApiUrl()}/api/neighbor-sources`)
-      .then(r => r.json())
-      .then((data: { sources: string[] }) => {
-        setNeighborSources(data.sources.length > 0 ? data.sources.join(', ') : 'none');
-      })
-      .catch(() => setNeighborSources('unknown'));
-  }, []);
-
   // ── Router management ────────────────────────────────────────────────────
-  const loadRouters = async () => {
+  const pollRouterStatuses = useCallback(async (quiet: boolean) => {
     try {
-      const res = await fetch(`${getApiUrl()}/api/routers`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setRouters(await res.json());
+      setRouterStatuses((await api<Record<string, RouterStatus> | null>('/api/routers/status')) ?? {});
+      if (!quiet) notify('Router status refreshed', 'success');
     } catch (e) {
-      console.error('Failed to load routers:', e);
+      notify(`Failed to poll router status: ${errorMessage(e)}`, 'error');
+    }
+  }, [notify]);
+
+  const openRAInterfaceModal = async (routerId: string, routerName: string) => {
+    try {
+      const interfaces = (await api<RAInterfaceConfig[] | null>(`/api/routers/${routerId}/interfaces`)) ?? [];
+      setRaInterfaceModal({ routerName, interfaces });
+    } catch (e) {
+      notify(`Failed to fetch RA interfaces: ${errorMessage(e)}`, 'error');
     }
   };
 
-  const getRouterStatuses = async () => {
-    try {
-      const res = await fetch(`${getApiUrl()}/api/routers/status`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setRouterStatuses(await res.json());
-      notify('Router status refreshed', 'success');
-    } catch (e) {
-      notify(`Failed to poll router status: ${(e as Error).message}`, 'error');
+  // Creates or replaces a router. Rejects with the backend's message, so the
+  // form that called it stays open.
+  const saveRouter = async (input: RouterInput, id?: string) => {
+    if (id) {
+      await api<RouterConfig>(`/api/routers/${id}`, { method: 'PUT', body: input });
+    } else {
+      await api<RouterConfig>('/api/routers', { method: 'POST', body: input });
     }
+    await loadRouters();
+    refreshPlan();
+    notify(`Router "${input.name.trim()}" ${id ? 'saved' : 'added'}`, 'success');
   };
 
-  const addRouter = async () => {
-    if (!newRouter.name || !newRouter.address || !newRouter.interface) return;
-    try {
-      const res = await fetch(`${getApiUrl()}/api/routers`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newRouter),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      await loadRouters();
-      setNewRouter({
-        name: '', address: '', interface: 'eth0', policy_source_address: '',
-        ra_interval_milliseconds: 3000, current_hop_limit: 64,
-        managed: false, other: false, router_lifetime_seconds: 1800,
-        reachable_time_milliseconds: 0, retransmit_time_milliseconds: 0,
-      });
-      setShowRouterConfig(false);
-      notify(`Router "${newRouter.name}" added`, 'success');
-    } catch (e) {
-      notify(`Failed to add router: ${(e as Error).message}`, 'error');
-    }
-  };
-
-  const deleteRouter = async (id: string) => {
-    try {
-      const res = await fetch(`${getApiUrl()}/api/routers/${id}`, { method: 'DELETE' });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || `HTTP ${res.status}`);
-      }
-      await loadRouters();
-      notify('Router removed', 'success');
-    } catch (e) {
-      notify(`Failed to remove router: ${(e as Error).message}`, 'error');
-    }
+  const deleteRouter = async (id: string, force: boolean) => {
+    const result = await api<RouterDeleteResult>(`/api/routers/${id}${force ? '?force=1' : ''}`, { method: 'DELETE' });
+    setRouterStatuses(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    await loadRouters();
+    refreshPlan();
+    return result;
   };
 
   const toggleRouterStatus = async (id: string) => {
     const router = routers.find(r => r.id === id);
     if (!router) return;
+    const status = router.status === 'active' ? 'inactive' : 'active';
     try {
-      const newStatus = router.status === 'active' ? 'inactive' : 'active';
-      const res = await fetch(`${getApiUrl()}/api/routers/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...router, status: newStatus }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api<RouterConfig>(`/api/routers/${id}`, { method: 'PUT', body: { ...router, status } });
       await loadRouters();
+      refreshPlan();
+      notify(
+        status === 'inactive'
+          ? `${router.name} is now inactive: it is excluded from the policy, and its policy RAs are withdrawn at the next apply`
+          : `${router.name} is now active: it takes part in the policy from the next apply`,
+        'info',
+      );
     } catch (e) {
-      notify(`Failed to update router status: ${(e as Error).message}`, 'error');
+      notify(`Failed to update router status: ${errorMessage(e)}`, 'error');
     }
   };
 
   // ── Clients ───────────────────────────────────────────────────────────────
-  const loadNeighbors = async () => {
-    try {
-      setNeighbors(await neighborProvider.fetchNeighbors());
-    } catch (e) {
-      console.error('Failed to load ND cache:', e);
-    }
-  };
-
-  // Triggers an immediate SNMP poll on all collectors, then updates the local list.
+  // Asks every neighbor source to refresh now, then updates the local list.
   // Disabled for REFRESH_COOLDOWN_SEC seconds after each call to prevent spam.
-  const REFRESH_COOLDOWN_SEC = 10;
-
   const refreshNeighbors = async () => {
     if (isRefreshing || refreshCooldown > 0) return;
     setIsRefreshing(true);
     try {
-      const res = await fetch(`${getApiUrl()}/api/neighbors/refresh`, { method: 'POST' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setNeighbors(await res.json());
-      // Start countdown to prevent rapid re-polling.
+      setNeighbors(await neighborProvider.refreshNeighbors());
       setRefreshCooldown(REFRESH_COOLDOWN_SEC);
       if (cooldownTimerRef.current) clearInterval(cooldownTimerRef.current);
       cooldownTimerRef.current = setInterval(() => {
         setRefreshCooldown(prev => {
           if (prev <= 1) {
-            clearInterval(cooldownTimerRef.current!);
+            if (cooldownTimerRef.current) clearInterval(cooldownTimerRef.current);
             cooldownTimerRef.current = null;
             return 0;
           }
@@ -263,188 +242,125 @@ const RAControllerFrontend = () => {
         });
       }, 1000);
     } catch (e) {
-      notify(`Failed to refresh: ${(e as Error).message}`, 'error');
+      notify(`Failed to refresh: ${errorMessage(e)}`, 'error');
     } finally {
       setIsRefreshing(false);
+      void loadSources();
     }
   };
 
   // ── RA Policy rules ───────────────────────────────────────────────────────
-  const loadRules = async () => {
-    try {
-      const res = await fetch(`${getApiUrl()}/api/rules`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setRules(await res.json());
-    } catch (e) {
-      console.error('Failed to load policy rules:', e);
+  // The backend's answer holds the canonical values; it becomes the state.
+  const saveRule = async (input: RuleInput, id?: number) => {
+    if (id !== undefined) {
+      const saved = await api<Rule>(`/api/rules/${id}`, { method: 'PUT', body: input });
+      setRules(prev => prev.map(r => (r.id === id ? saved : r)));
+    } else {
+      const saved = await api<Rule>('/api/rules', { method: 'POST', body: input });
+      setRules(prev => [...prev, saved]);
     }
-  };
-
-  const addRule = async () => {
-    try {
-      const res = await fetch(`${getApiUrl()}/api/rules`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ comment: newRule.comment, entries: newRule.entries, nexthop: newRule.nexthop }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      await loadRules();
-      setNewRule({ comment: '', entries: [], nexthop: '' });
-      setNewRuleEntry({ type: 'ipv6', value: '' });
-      notify('Policy rule added', 'success');
-    } catch (e) {
-      notify(`Failed to add policy rule: ${(e as Error).message}`, 'error');
-    }
-  };
-
-  const addEntryToNewRule = () => {
-    if (!newRuleEntry.value) return;
-    setNewRule({ ...newRule, entries: [...newRule.entries, { ...newRuleEntry }] });
-    setNewRuleEntry({ type: 'ipv6', value: '' });
-  };
-
-  const removeEntryFromNewRule = (index: number) =>
-    setNewRule({ ...newRule, entries: newRule.entries.filter((_, i) => i !== index) });
-
-  const toggleRuleExpanded = (ruleId: number) =>
-    setExpandedRules(prev => ({ ...prev, [ruleId]: !prev[ruleId] }));
-
-  const fetchServiceEndpoints = async (service: FqdnService) => {
-    const serviceName = service.service || service.name;
-    if (!serviceName) return null;
-    if (serviceEndpoints[serviceName]) return serviceEndpoints[serviceName];
-    try {
-      const data = await serviceProvider.fetchEndpoints(service);
-      if (data) setServiceEndpoints(prev => ({ ...prev, [serviceName]: data }));
-      return data;
-    } catch {
-      return null;
-    }
-  };
-
-  const addFqdnServiceToRule = async (service: FqdnService) => {
-    try {
-      const serviceKey = service.service || service.name;
-      const displayName = service.name || service.service;
-      if (!serviceKey) { notify('Service name is missing', 'error'); return; }
-
-      const endpoints = await fetchServiceEndpoints(service);
-      if (!endpoints) { notify('Failed to fetch service endpoints', 'error'); return; }
-
-      const prefixes = endpoints.ipv6_prefixes ?? [];
-      if (prefixes.length === 0) { notify('This service has no IPv6 prefixes', 'info'); return; }
-
-      const entries: Entry[] = prefixes.map(prefix => ({ type: 'fqdn', value: prefix, service: serviceKey }));
-      setNewRule({ ...newRule, entries: [...newRule.entries, ...entries] });
-      setShowFqdnModal(false);
-      notify(`Added ${prefixes.length} prefixes from "${displayName}"`, 'success');
-    } catch (e) {
-      notify(`Failed to fetch prefixes: ${(e as Error).message}`, 'error');
-    }
+    refreshPlan();
+    notify(id !== undefined ? 'Policy rule saved' : 'Policy rule added', 'success');
   };
 
   const deleteRule = async (id: number) => {
     try {
-      const res = await fetch(`${getApiUrl()}/api/rules/${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      await loadRules();
-      setGroups(groups.map(g => ({ ...g, rules: g.rules.filter(r => r !== id) })));
+      await api<void>(`/api/rules/${id}`, { method: 'DELETE' });
+      // The backend removed the rule from every group as well.
+      await Promise.all([loadRules(), loadGroups()]);
+      refreshPlan();
       notify('Policy rule deleted', 'success');
     } catch (e) {
-      notify(`Failed to delete policy rule: ${(e as Error).message}`, 'error');
+      notify(`Failed to delete policy rule: ${errorMessage(e)}`, 'error');
     }
   };
 
   // ── Policy groups ─────────────────────────────────────────────────────────
-  const loadGroups = async () => {
-    try {
-      const res = await fetch(`${getApiUrl()}/api/groups`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setGroups(await res.json());
-    } catch (e) {
-      console.error('Failed to load policy groups:', e);
+  const saveGroup = async (input: { name: string; members: string[] }, id?: number) => {
+    if (id !== undefined) {
+      // PUT replaces the whole group, so its rules are sent along unchanged.
+      const body: GroupInput = { ...input, rules: groups.find(g => g.id === id)?.rules ?? [] };
+      const saved = await api<Group>(`/api/groups/${id}`, { method: 'PUT', body });
+      setGroups(prev => prev.map(g => (g.id === id ? saved : g)));
+    } else {
+      const body: GroupInput = { ...input, rules: [] };
+      const saved = await api<Group>('/api/groups', { method: 'POST', body });
+      setGroups(prev => [...prev, saved]);
     }
+    refreshPlan();
+    notify(`Policy group "${input.name.trim()}" ${id !== undefined ? 'saved' : 'created'}`, 'success');
   };
 
-  const addGroup = async () => {
-    if (!newGroup.name || selectedNeighbors.length === 0) return;
-    try {
-      const res = await fetch(`${getApiUrl()}/api/groups`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newGroup.name, members: selectedNeighbors }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      await loadGroups();
-      setNewGroup({ name: '' });
-      setSelectedNeighbors([]);
-      setShowNeighborModal(false);
-      notify(`Policy group "${newGroup.name}" created`, 'success');
-    } catch (e) {
-      notify(`Failed to create policy group: ${(e as Error).message}`, 'error');
-    }
-  };
-
-  const updateGroupRules = async (id: number, rules: number[]) => {
-    try {
-      const res = await fetch(`${getApiUrl()}/api/groups/${id}/rules`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rules }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      await loadGroups();
-      notify('Rules updated', 'success');
-    } catch (e) {
-      notify(`Failed to update rules: ${(e as Error).message}`, 'error');
-    }
+  const updateGroupRules = async (id: number, ruleIds: number[]) => {
+    const saved = await api<Group>(`/api/groups/${id}/rules`, { method: 'PUT', body: { rules: ruleIds } });
+    setGroups(prev => prev.map(g => (g.id === id ? saved : g)));
+    refreshPlan();
+    notify('Rules updated', 'success');
   };
 
   const deleteGroup = async (id: number) => {
     try {
-      const res = await fetch(`${getApiUrl()}/api/groups/${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api<void>(`/api/groups/${id}`, { method: 'DELETE' });
       await loadGroups();
+      refreshPlan();
       notify('Policy group deleted', 'success');
     } catch (e) {
-      notify(`Failed to delete policy group: ${(e as Error).message}`, 'error');
+      notify(`Failed to delete policy group: ${errorMessage(e)}`, 'error');
     }
   };
 
-  const toggleGroupExpanded = (groupId: number) =>
-    setExpandedGroups(prev => ({ ...prev, [groupId]: !prev[groupId] }));
-
-  // ── Commit & Deploy ───────────────────────────────────────────────────────
-  const applyPolicy = async () => {
+  // ── Services ──────────────────────────────────────────────────────────────
+  const fetchEndpoints = useCallback(async (serviceName: string) => {
     try {
-      const res = await fetch(`${getApiUrl()}/api/policy/apply`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const result = await res.json();
+      return await serviceProvider.fetchEndpoints(serviceName);
+    } finally {
+      void loadSources();
+    }
+  }, [loadSources]);
 
-      setPreviousYaml(generateYaml(rules, groups));
+  const reloadServices = useCallback(() => { void loadServices(); }, [loadServices]);
 
-      const results: Array<{ router: string; success: boolean; error?: string }> =
-        result.results ?? [];
-      const warnings: string[] = result.warnings ?? [];
-      const failed = results.filter(r => !r.success);
+  const catalog: ServiceCatalog = useMemo(() => ({
+    services: fqdnServices,
+    error: servicesError,
+    sources,
+    reload: reloadServices,
+    fetchEndpoints,
+  }), [fqdnServices, servicesError, sources, reloadServices, fetchEndpoints]);
 
-      if (result.success) {
-        notify(`Policy committed (${results.length} router(s) reconciled)`, 'success');
-      } else {
-        notify(`Policy not fully applied — ${failed.map(r => `${r.router}: ${r.error}`).join('; ')}`, 'error');
-      }
-      warnings.forEach(w => notify(`Policy warning: ${w}`, 'error'));
+  // ── Plan, Commit & Deploy ─────────────────────────────────────────────────
+  // Opening either view asks for a new plan: the routers' state may have
+  // changed since the last edit.
+  const openPlan = () => {
+    setShowPlan(true);
+    void refreshPlanNow();
+  };
+
+  const openConfirmDeploy = () => {
+    setShowConfirmDeploy(true);
+    void refreshPlanNow();
+  };
+
+  const applyPolicy = async () => {
+    setShowConfirmDeploy(false);
+    setApplyState({ status: 'running' });
+    try {
+      // 200: applied everywhere. 207: some router failed; the body says which.
+      const result = await api<ApplyResult>('/api/policy/apply', { method: 'POST' });
+      setApplyState({ status: 'done', result });
     } catch (e) {
-      notify(`Commit failed: ${(e as Error).message}`, 'error');
+      setApplyState({ status: 'error', message: errorMessage(e) });
+    } finally {
+      void pollRouterStatuses(true);
+      void refreshPlanNow();
     }
   };
 
   // ── Derived values ────────────────────────────────────────────────────────
-  const currentHasChanges = hasChanges(rules, groups, previousYaml);
-  const diffLines = generateYamlDiff(rules, groups, previousYaml);
+  const pending = plan?.pending ?? false;
+  const neighborSourceNames = sources
+    ? (sources.neighbors.map(s => s.name || s.url).join(', ') || 'none')
+    : sourcesError ? 'unknown' : 'loading...';
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -482,40 +398,38 @@ const RAControllerFrontend = () => {
 
               {/* Secondary: status / view */}
               <button
-                onClick={getRouterStatuses}
+                onClick={() => pollRouterStatuses(false)}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-slate-300 hover:text-white hover:bg-slate-700 rounded text-sm transition"
               >
                 <RefreshCw className="w-4 h-4" />
                 Poll Status
               </button>
               <button
-                onClick={() => setShowYamlPreview(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-slate-300 hover:text-white hover:bg-slate-700 rounded text-sm transition"
-              >
-                <Eye className="w-4 h-4" />
-                Preview Config
-              </button>
-              <button
-                onClick={() => setShowYamlDiff(true)}
+                onClick={openPlan}
+                title={
+                  planError ? `The plan could not be computed: ${planError}`
+                  : pending ? 'There are unapplied changes'
+                  : 'What applying the current draft would do'
+                }
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-sm transition ${
-                  currentHasChanges
+                  pending
                     ? 'text-orange-300 hover:bg-slate-700'
                     : 'text-slate-300 hover:text-white hover:bg-slate-700'
                 }`}
               >
-                <GitCompare className="w-4 h-4" />
-                Diff
-                {currentHasChanges && (
-                  <span className="w-1.5 h-1.5 bg-orange-400 rounded-full" />
-                )}
+                <ListChecks className="w-4 h-4" />
+                Plan
+                {pending && <span className="w-1.5 h-1.5 bg-orange-400 rounded-full" />}
+                {planError && <span className="w-1.5 h-1.5 bg-red-400 rounded-full" />}
               </button>
 
               <div className="w-px h-5 bg-slate-600 mx-1" />
 
               {/* Primary: commit */}
               <button
-                onClick={() => setShowConfirmDeploy(true)}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-500 text-sm font-semibold transition"
+                onClick={openConfirmDeploy}
+                disabled={applyState?.status === 'running'}
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-500 disabled:bg-slate-600 text-sm font-semibold transition"
               >
                 <Save className="w-4 h-4" />
                 Commit &amp; Deploy
@@ -560,7 +474,9 @@ const RAControllerFrontend = () => {
               <NeighborsTab
                 neighbors={neighbors}
                 groups={groups}
-                sourceDescription={neighborSources}
+                sourceDescription={neighborSourceNames}
+                sources={sources}
+                sourcesError={sourcesError}
                 onRefresh={refreshNeighbors}
                 isRefreshing={isRefreshing}
                 refreshCooldown={refreshCooldown}
@@ -571,17 +487,9 @@ const RAControllerFrontend = () => {
                 rules={rules}
                 routers={routers}
                 groups={groups}
-                newRule={newRule}
-                newRuleEntry={newRuleEntry}
-                expandedRules={expandedRules}
-                onNewRuleChange={setNewRule}
-                onNewRuleEntryChange={setNewRuleEntry}
-                onAddRule={addRule}
-                onAddEntry={addEntryToNewRule}
-                onRemoveEntry={removeEntryFromNewRule}
+                catalog={catalog}
+                onSaveRule={saveRule}
                 onDeleteRule={deleteRule}
-                onToggleExpanded={toggleRuleExpanded}
-                onOpenFqdnModal={() => setShowFqdnModal(true)}
               />
             )}
             {activeTab === 'groups' && (
@@ -590,16 +498,11 @@ const RAControllerFrontend = () => {
                 rules={rules}
                 routers={routers}
                 neighbors={neighbors}
-                newGroup={newGroup}
-                selectedNeighbors={selectedNeighbors}
-                expandedGroups={expandedGroups}
-                onNewGroupChange={setNewGroup}
-                onSelectedNeighborsChange={setSelectedNeighbors}
-                onAddGroup={addGroup}
+                sources={sources}
+                sourceDescription={neighborSourceNames}
+                onSaveGroup={saveGroup}
                 onDeleteGroup={deleteGroup}
                 onUpdateGroupRules={updateGroupRules}
-                onToggleExpanded={toggleGroupExpanded}
-                onOpenNeighborModal={() => setShowNeighborModal(true)}
               />
             )}
           </div>
@@ -607,58 +510,33 @@ const RAControllerFrontend = () => {
       </div>
 
       {/* ── Modals ──────────────────────────────────────────────────────── */}
+      {showPlan && (
+        <PlanModal
+          plan={plan}
+          error={planError}
+          loading={planLoading}
+          onRefresh={() => { void refreshPlanNow(); }}
+          onClose={() => setShowPlan(false)}
+        />
+      )}
       {showConfirmDeploy && (
-        <ConfirmModal
-          title="Commit & Deploy Policy"
-          message="This will push the current configuration to all active routers via gRPC. Continue?"
-          confirmLabel="Commit & Deploy"
-          onConfirm={() => { setShowConfirmDeploy(false); applyPolicy(); }}
+        <ApplyConfirmModal
+          plan={plan}
+          error={planError}
+          loading={planLoading}
+          onConfirm={applyPolicy}
           onCancel={() => setShowConfirmDeploy(false)}
         />
       )}
-      {showFqdnModal && (
-        <FqdnModal
-          fqdnServices={fqdnServices}
-          serviceEndpoints={serviceEndpoints}
-          onSelectService={addFqdnServiceToRule}
-          onFetchEndpoints={fetchServiceEndpoints}
-          onClose={() => setShowFqdnModal(false)}
-        />
-      )}
-      {showNeighborModal && (
-        <NeighborModal
-          neighbors={neighbors}
-          selectedNeighbors={selectedNeighbors}
-          lastCheckedIndex={lastCheckedIndex}
-          sourceDescription={neighborSources}
-          onSelectionChange={setSelectedNeighbors}
-          onLastCheckedIndexChange={setLastCheckedIndex}
-          onClose={() => setShowNeighborModal(false)}
-        />
+      {applyState && (
+        <ApplyResultModal state={applyState} onClose={() => setApplyState(null)} />
       )}
       {showRouterConfig && (
         <RouterConfigModal
           routers={routers}
-          newRouter={newRouter}
-          onNewRouterChange={setNewRouter}
-          onAddRouter={addRouter}
+          onSaveRouter={saveRouter}
           onDeleteRouter={deleteRouter}
           onClose={() => setShowRouterConfig(false)}
-        />
-      )}
-      {showYamlPreview && (
-        <YamlPreviewModal
-          rules={rules}
-          groups={groups}
-          routers={routers}
-          onClose={() => setShowYamlPreview(false)}
-        />
-      )}
-      {showYamlDiff && (
-        <YamlDiffModal
-          diffLines={diffLines}
-          hasChanges={currentHasChanges}
-          onClose={() => setShowYamlDiff(false)}
         />
       )}
       {raInterfaceModal && (
