@@ -48,3 +48,16 @@ POLICY_LL=
 INSTALL_DIR=/opt/go-ra-server
 GO=                               # path of the Go compiler; empty: PATH, /usr/local/go/bin, ~/go/bin, ... are searched
 GRPC_ADDR=localhost:50051         # where gorad listens for the controller, e.g. [2001:db8:ffff::a]:50051
+
+# ── SNMP agent (snmpd) ───────────────────────────────────────────────────────
+# The RA controller reads the hosts of the site link from this router's
+# neighbor cache over SNMP v2c. With SNMP_COMMUNITY, setup installs snmpd (if
+# missing) and writes /etc/snmp/snmpd.conf: read-only, only for the sources in
+# SNMP_ALLOW_FROM, only for the tables the controller reads. An snmpd.conf
+# that setup did not write is kept as snmpd.conf.bak-<date>. Empty: snmpd is
+# not touched. Letters, digits and . _ @ % + = - are allowed in the community.
+# The community string works like a password: keep setup.conf private
+# (chmod 600 setup.conf) and do not use "public".
+SNMP_COMMUNITY=                   # the community the controller uses for this router (param.yaml, snmp_targets)
+SNMP_ALLOW_FROM=                  # address(es) or prefix(es) of the controller, comma-separated; required with SNMP_COMMUNITY
+SNMP_LISTEN=udp:161,udp6:161      # agentAddress of snmpd; e.g. udp6:[2001:db8:ffff::a]:161 for the management address only

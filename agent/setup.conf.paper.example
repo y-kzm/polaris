@@ -47,3 +47,10 @@ GRPC_ADDR=[2001:db8:ffff::a]:50051   # EDIT: this router's address on the manage
                                   #       authenticated: do not use an address the hosts can reach
                                   #       ([::]:50051 would listen on the hosts' link as well).
 GO=
+
+# ── SNMP agent (snmpd) ───────────────────────────────────────────────────────
+# The RA controller reads the hosts from this router's neighbor cache over
+# SNMP. Empty SNMP_COMMUNITY: snmpd is not set up.
+SNMP_COMMUNITY=                   # EDIT: the community the controller uses (works like a password; not "public")
+SNMP_ALLOW_FROM=2001:db8:ffff::c  # EDIT: the address of the RA controller on the management network
+SNMP_LISTEN=udp6:[2001:db8:ffff::a]:161   # EDIT: this router's management address (the one of GRPC_ADDR)

@@ -2,6 +2,7 @@
 # One-time setup script for the go-ra-server agent.
 # Configures IPv6 kernel parameters, NPTv6, NDP proxy (ndppd),
 # builds the gorad binary, and installs it as a systemd service.
+# With SNMP_COMMUNITY it also sets up snmpd for the RA controller.
 
 set -euo pipefail
 
@@ -15,15 +16,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 SETTINGS="INSTALL_DIR GRPC_ADDR WAN_PREFIX LAN_PREFIX WAN_IF LAN_IF POLICY_LL
 RA_INTERVAL_MS ROUTER_LIFETIME_S CUR_HOP_LIMIT REACHABLE_TIME_MS RETRANS_TIME_MS RA_MTU
-PREFIX_VALID_S PREFIX_PREFERRED_S RDNSS RDNSS_LIFETIME_S OVERWRITE_CONFIG GO"
+PREFIX_VALID_S PREFIX_PREFERRED_S RDNSS RDNSS_LIFETIME_S OVERWRITE_CONFIG GO
+SNMP_COMMUNITY SNMP_ALLOW_FROM SNMP_LISTEN"
 
 usage() {
   cat << USAGE
 Usage: sudo ./setup.sh [-c FILE] [--print-config]
 
   -c FILE          read the settings from FILE (default: ./setup.conf, if present)
-  --print-config   show the resolved settings and the baseline config.yaml that
-                   would be written, then exit without changing anything
+  --print-config   show the resolved settings and the files that would be
+                   written (config.yaml, snmpd.conf), then exit without
+                   changing anything
 USAGE
 }
 
@@ -245,6 +248,76 @@ if [[ -n "$RDNSS" ]]; then
   done
 fi
 
+# SNMP agent (snmpd). The RA controller learns the hosts of the site link from
+# this router's neighbor cache, which it reads over SNMP v2c. With
+# SNMP_COMMUNITY, setup installs snmpd (if missing) and writes its
+# configuration: read-only, only for the sources in SNMP_ALLOW_FROM, and only
+# for the tables the controller reads. Neither setting has a default: a
+# well-known community or "any source" would open the agent to everyone.
+# Empty SNMP_COMMUNITY: snmpd is not touched.
+SNMP_COMMUNITY="${SNMP_COMMUNITY:-}"
+SNMP_ALLOW_FROM="${SNMP_ALLOW_FROM:-}"           # comma-separated addresses or prefixes of the controller
+SNMP_LISTEN="${SNMP_LISTEN:-udp:161,udp6:161}"   # agentAddress of snmpd; the default is every address
+SNMP_CONF="/etc/snmp/snmpd.conf"
+SNMP_MARK="# Written by polaris agent/setup.sh."
+SNMP_SOURCES=()
+if [[ -n "$SNMP_COMMUNITY" ]]; then
+  # No leading "-" (snmpd would read it as an option) and no ":" or ","
+  # (separators of the controller's SNMP_TARGETS list).
+  if [[ ! "$SNMP_COMMUNITY" =~ ^[A-Za-z0-9][A-Za-z0-9._@%+=-]*$ ]]; then
+    echo "Error: SNMP_COMMUNITY must start with a letter or digit and may contain" \
+         "letters, digits and . _ @ % + = - only." >&2; exit 1
+  fi
+  if [[ -z "$SNMP_ALLOW_FROM" ]]; then
+    echo "Error: SNMP_COMMUNITY needs SNMP_ALLOW_FROM (the address of the RA controller)." >&2; exit 1
+  fi
+  if [[ "$SNMP_ALLOW_FROM" == *$'\n'* ]]; then
+    echo "Error: SNMP_ALLOW_FROM must be a single line." >&2; exit 1
+  fi
+  IFS=', ' read -r -a SNMP_SOURCES <<< "$SNMP_ALLOW_FROM"
+  if [[ ${#SNMP_SOURCES[@]} -eq 0 ]]; then
+    echo "Error: SNMP_ALLOW_FROM names no address." >&2; exit 1
+  fi
+  for src in "${SNMP_SOURCES[@]}"; do
+    if [[ ! "$src" =~ ^([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+|[0-9a-fA-F:]*:[0-9a-fA-F:]*)(/[0-9]+)?$ ]]; then
+      echo "Error: SNMP_ALLOW_FROM: '$src' is not an IPv4 or IPv6 address or prefix." >&2; exit 1
+    fi
+    # snmpd skips a source it cannot parse and starts all the same, so check here.
+    if command -v python3 > /dev/null && ! python3 -c \
+         'import ipaddress, sys; ipaddress.ip_network(sys.argv[1], strict=False)' "$src" 2>/dev/null; then
+      echo "Error: SNMP_ALLOW_FROM: '$src' is not a valid address or prefix." >&2; exit 1
+    fi
+  done
+  SNMP_ALLOW_FROM="${SNMP_SOURCES[*]}"
+  if [[ ! "$SNMP_LISTEN" =~ ^[][A-Za-z0-9.:,_%-]+$ ]]; then
+    echo "Error: SNMP_LISTEN must be an snmpd agentAddress such as udp6:[2001:db8:ffff::a]:161, got '$SNMP_LISTEN'." >&2; exit 1
+  fi
+fi
+
+# Write the snmpd configuration to stdout. $1: the community string.
+# The view covers what controller/modules/neighbor-collector-snmp walks.
+snmpd_config() {
+  local community="$1" src
+  cat << CONF
+$SNMP_MARK Changes are lost when setup runs again.
+# Read-only access for the RA controller, limited to the tables it reads:
+# the neighbor cache (IP-MIB::ipNetToPhysicalTable), the interface names
+# (IF-MIB::ifName, ifDescr) and the routes (IP-MIB::inetCidrRouteTable).
+agentAddress $SNMP_LISTEN
+view polaris included .1.3.6.1.2.1.4.35
+view polaris included .1.3.6.1.2.1.31.1.1.1.1
+view polaris included .1.3.6.1.2.1.2.2.1.2
+view polaris included .1.3.6.1.2.1.4.24.7
+CONF
+  for src in "${SNMP_SOURCES[@]}"; do
+    if [[ "$src" == *:* ]]; then
+      echo "rocommunity6 $community $src -V polaris"
+    else
+      echo "rocommunity $community $src -V polaris"
+    fi
+  done
+}
+
 # The interface's own link-local address: the source of the baseline RA.
 BASE_LL=""
 if [[ -n "$LAN_IF" ]] && command -v ip > /dev/null; then
@@ -313,6 +386,11 @@ if [[ -n "$LAN_IF" ]]; then
   echo "Baseline RA       : every ${RA_INTERVAL_MS} ms, Router Lifetime ${ROUTER_LIFETIME_S} s," \
        "MTU option $([[ "$RA_MTU" == 0 ]] && echo "(none)" || echo "$RA_MTU"), RDNSS ${RDNSS:-(none)}"
 fi
+if [[ -n "$SNMP_COMMUNITY" ]]; then
+  echo "SNMP agent        : snmpd on $SNMP_LISTEN, read-only for $SNMP_ALLOW_FROM"
+else
+  echo "SNMP agent        : (not set up — SNMP_COMMUNITY is empty)"
+fi
 echo
 
 if [[ $PRINT_ONLY -eq 1 ]]; then
@@ -325,6 +403,11 @@ if [[ $PRINT_ONLY -eq 1 ]]; then
     baseline_config
   else
     echo "LAN_IF is not set: no baseline configuration is generated."
+  fi
+  if [[ -n "$SNMP_COMMUNITY" ]]; then
+    echo
+    echo "--- $SNMP_CONF (the community string is not shown) ---"
+    snmpd_config "<SNMP_COMMUNITY>"
   fi
   exit 0
 fi
@@ -511,6 +594,55 @@ systemctl restart "$SERVICE_NAME"
 echo "Service '$SERVICE_NAME' installed and started."
 echo
 
+# --- SNMP agent ---
+if [[ -n "$SNMP_COMMUNITY" ]]; then
+  echo "=== SNMP agent (snmpd) ==="
+  if ! command -v snmpd > /dev/null; then
+    if command -v apt-get > /dev/null; then
+      echo "snmpd is not installed — installing it with apt-get..."
+      DEBIAN_FRONTEND=noninteractive apt-get install -y snmpd || {
+        apt-get update        # stale or missing package lists
+        DEBIAN_FRONTEND=noninteractive apt-get install -y snmpd
+      }
+    else
+      echo "Error: snmpd is not installed and apt-get is not available; install net-snmp and run setup again." >&2
+      exit 1
+    fi
+  fi
+  mkdir -p "$(dirname "$SNMP_CONF")"
+  if [[ -L "$SNMP_CONF" ]]; then
+    echo "Error: $SNMP_CONF is a symbolic link; remove it or replace it by a file." >&2
+    exit 1
+  fi
+  if [[ -e "$SNMP_CONF" && ! -f "$SNMP_CONF" ]]; then
+    echo "Error: $SNMP_CONF is not a regular file." >&2
+    exit 1
+  fi
+  # A configuration that setup did not write is kept as a backup.
+  if [[ -f "$SNMP_CONF" ]] && ! head -1 "$SNMP_CONF" | grep -qF "$SNMP_MARK"; then
+    SNMP_BACKUP="$SNMP_CONF.bak-$(date +%Y%m%d-%H%M%S)"
+    cp -P -p "$SNMP_CONF" "$SNMP_BACKUP"
+    echo "Kept the previous configuration as $SNMP_BACKUP"
+  fi
+  TMP_SNMP=$(mktemp "$SNMP_CONF.XXXXXX")      # mode 600: the file holds the community string
+  snmpd_config "$SNMP_COMMUNITY" > "$TMP_SNMP"
+  mv -f "$TMP_SNMP" "$SNMP_CONF"
+  echo "Wrote $SNMP_CONF"
+  systemctl enable snmpd
+  systemctl restart snmpd
+  sleep 1
+  if ! systemctl is-active --quiet snmpd; then
+    echo "Error: snmpd did not stay up; see: journalctl -u snmpd -n 30" >&2
+    echo "  (a common cause is an address in SNMP_LISTEN that this router does not have)" >&2
+    exit 1
+  fi
+  echo "snmpd enabled and restarted."
+  echo "  In the RA controller (param.yaml, snmp_targets), add this router with the same"
+  echo "  community (in quotes)${LAN_IF:+, ifname \"$LAN_IF\"}${BASE_LL:+ and self_ll \"$BASE_LL\"}."
+  echo "  If a firewall is active, allow UDP port 161 from $SNMP_ALLOW_FROM."
+  echo
+fi
+
 echo "=================================="
 echo "  Setup complete!"
 echo ""
@@ -520,4 +652,9 @@ echo "    journalctl -u $SERVICE_NAME -f"
 echo ""
 echo "  Check RA daemon status:"
 echo "    gora status"
+if [[ -n "$SNMP_COMMUNITY" ]]; then
+  echo ""
+  echo "  Check the SNMP agent (from the controller):"
+  echo "    snmpwalk -v2c -c <community> <this router> 1.3.6.1.2.1.4.35"
+fi
 echo "=================================="

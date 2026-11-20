@@ -10,6 +10,7 @@
 3. NDP プロキシ（`ndppd`）の起動
 4. `gorad` バイナリのビルドとデプロイ
 5. systemd サービスのインストールと起動
+6. （任意）SNMP エージェント（`snmpd`）の設定。コントローラがサイト内リンクのホストを取得するために使う
 
 ## コンポーネント
 
@@ -29,6 +30,7 @@
 - Go（`gorad` のビルドに必要）
 - SNPT/DNPT ターゲットをサポートする `ip6tables`（NPTv6 に必要）
 - `ndppd`（NDP プロキシデーモン）
+- `snmpd`（net-snmp）。`SNMP_COMMUNITY` を設定した場合のみ。無ければ `setup.sh` が `apt-get` で導入する
 
 ## クイックスタート（手動 / 開発用）
 
@@ -165,6 +167,9 @@ root として実行・読み込みされます。
 | `INSTALL_DIR` | `/opt/go-ra-server` | インストール先ディレクトリ |
 | `GO` | （自動で探す） | Go コンパイラのパス。`sudo` は `PATH` を引き継がないので、`setup.sh` は `/usr/local/go/bin` と実行ユーザーの Go のディレクトリも探す。別の場所にある場合は `GO` で指定する。ビルドは root ではなく、`sudo` を実行したユーザーの権限で行う |
 | `GRPC_ADDR` | `localhost:50051` | gorad の gRPC リッスンアドレス |
+| `SNMP_COMMUNITY` | （空） | RA コントローラ用の community 文字列。設定すると `setup.sh` が `snmpd` を設定する（下記）。空なら `snmpd` には触れない |
+| `SNMP_ALLOW_FROM` | （`SNMP_COMMUNITY` を設定した場合は必須） | コントローラのアドレスまたはプレフィクス（カンマ区切り、IPv4 と IPv6） |
+| `SNMP_LISTEN` | `udp:161,udp6:161` | `snmpd` の `agentAddress`。管理用アドレスだけで待ち受ける場合は `udp6:[2001:db8:ffff::a]:161` のように指定する |
 
 ベースライン RA の既定値は、RFC 4861（6.2.1 節）と RFC 8106 の既定値です。
 
@@ -183,6 +188,34 @@ root として実行・読み込みされます。
 sudo nano /opt/go-ra-server/config.yaml
 sudo systemctl restart go-ra-server
 ```
+
+**4. SNMP エージェント（任意）**
+
+RA コントローラは、サイト内リンクのホストを各ルータの近隣キャッシュから取得します。
+取得には `neighbor-collector-snmp` モジュールが SNMP v2c を使います。
+`SNMP_COMMUNITY` と `SNMP_ALLOW_FROM` を設定すると、`setup.sh` は `snmpd` が無ければ導入し、
+`/etc/snmp/snmpd.conf` を書き出して、サービスを有効化・再起動します。
+
+```
+SNMP_COMMUNITY=<自分で決めた文字列>
+SNMP_ALLOW_FROM=2001:db8:ffff::c           # コントローラ
+SNMP_LISTEN=udp6:[2001:db8:ffff::a]:161    # このルータの管理用アドレス
+```
+
+書き出す設定は読み取り専用で、`SNMP_ALLOW_FROM` の送信元にだけ応答し、コントローラが読む表
+（`ipNetToPhysicalTable`、`ifName`、`ifDescr`、`inetCidrRouteTable`）だけを公開します。
+`setup.sh` が書いたものではない `snmpd.conf` は、`snmpd.conf.bak-<日時>` として残します。
+ファイルは全体を置き換えるので、ルータで `snmpd` を他の用途にも使っている場合は、手作業で統合してください。
+
+community 文字列はパスワードに相当し、平文で送られます（SNMP v2c）。
+`setup.conf` を他人から読めないようにし（`chmod 600 setup.conf`）、`public` は使わず、
+SNMP は管理用ネットワークに限定してください。`--print-config` は community を表示しません。
+ルータでファイアウォールを使っている場合は、コントローラからの UDP 161 番を許可してください。
+`setup.sh` はファイアウォールの規則を変更しません。
+
+コントローラ側（`param.yaml` の `snmp_targets`）には、同じ community を引用符付き（`community: "..."`）で設定します。
+`ifname` には `LAN_IF` を、`self_ll` にはそのインタフェースでのルータ自身のリンクローカルアドレスを指定します。
+どちらも `setup.sh` が最後に表示します。community に使える文字は、英数字と `. _ @ % + = -` です。
 
 ### 日常的な操作
 

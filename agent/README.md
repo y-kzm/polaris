@@ -10,6 +10,7 @@ The `setup.sh` script handles the full one-time setup:
 3. Starts NDP proxy (`ndppd`)
 4. Builds and deploys the `gorad` binary
 5. Installs and starts the systemd service
+6. Optionally sets up the SNMP agent (`snmpd`) that the controller polls for the hosts of the site link
 
 ## Components
 
@@ -29,6 +30,7 @@ After `setup.sh` runs, `config.yaml` is deployed to `$INSTALL_DIR` (default `/op
 - Go (for building `gorad`)
 - `ip6tables` with SNPT/DNPT target support (for NPTv6)
 - `ndppd` (NDP proxy daemon)
+- `snmpd` (net-snmp), only with `SNMP_COMMUNITY`; `setup.sh` installs it with `apt-get` if it is missing
 
 ## Quick start (manual / development)
 
@@ -175,6 +177,9 @@ its settings file are run and read as root.
 | `INSTALL_DIR` | `/opt/go-ra-server` | Installation directory |
 | `GO` | (searched) | Path of the Go compiler. `sudo` does not keep your `PATH`, so `setup.sh` also looks in `/usr/local/go/bin` and in the Go directories of the invoking user; set `GO` if it is elsewhere. The build runs as the user who called `sudo`, not as root |
 | `GRPC_ADDR` | `localhost:50051` | gRPC listen address for gorad |
+| `SNMP_COMMUNITY` | (empty) | Community string for the RA controller. When set, `setup.sh` sets up `snmpd` (see below); empty leaves `snmpd` untouched |
+| `SNMP_ALLOW_FROM` | (required with `SNMP_COMMUNITY`) | Address(es) or prefix(es) of the controller, comma-separated, IPv4 or IPv6 |
+| `SNMP_LISTEN` | `udp:161,udp6:161` | `agentAddress` of `snmpd`; for example `udp6:[2001:db8:ffff::a]:161` to listen on the management address only |
 
 The defaults of the baseline RA are those of RFC 4861 (Section 6.2.1) and RFC 8106.
 
@@ -194,6 +199,38 @@ be edited before use:
 sudo nano /opt/go-ra-server/config.yaml
 sudo systemctl restart go-ra-server
 ```
+
+**4. The SNMP agent (optional)**
+
+The RA controller learns the hosts of the site link from each router's
+neighbor cache, which its `neighbor-collector-snmp` module reads over SNMP v2c.
+With `SNMP_COMMUNITY` and `SNMP_ALLOW_FROM` set, `setup.sh` installs `snmpd` if
+it is missing, writes `/etc/snmp/snmpd.conf`, and enables and restarts the
+service:
+
+```
+SNMP_COMMUNITY=<a string of your own>
+SNMP_ALLOW_FROM=2001:db8:ffff::c           # the controller
+SNMP_LISTEN=udp6:[2001:db8:ffff::a]:161    # this router's management address
+```
+
+The configuration it writes is read-only, answers only the sources in
+`SNMP_ALLOW_FROM`, and exposes only the tables the controller reads
+(`ipNetToPhysicalTable`, `ifName`, `ifDescr`, `inetCidrRouteTable`).
+An `snmpd.conf` that `setup.sh` did not write is kept as
+`snmpd.conf.bak-<date>`; the file is replaced as a whole, so other uses of
+`snmpd` on the router have to be merged by hand.
+
+The community string works like a password and is sent in clear text (SNMP
+v2c): keep `setup.conf` private (`chmod 600 setup.conf`), do not use `public`,
+and keep SNMP on the management network. `--print-config` does not show it.
+If a firewall is active on the router, allow UDP port 161 from the controller;
+`setup.sh` does not change firewall rules.
+
+Enter the same community in the controller (`param.yaml`, `snmp_targets`), in
+quotes (`community: "..."`), with `ifname` set to `LAN_IF` and `self_ll` set to
+the router's own link-local address on that interface; `setup.sh` prints both
+at the end. The community may contain letters, digits and `. _ @ % + = -`.
 
 ### Day-to-day operations
 
