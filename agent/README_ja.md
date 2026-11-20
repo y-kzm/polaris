@@ -19,6 +19,7 @@
 | `systemd/go-ra-server.service` | systemd ユニットファイル |
 | `setup.sh` | 初回セットアップスクリプト |
 | `setup.conf.example` | `setup.sh` の設定ファイルの見本（`setup.conf` にコピーして編集） |
+| `setup.conf.paper.example` | 同じく、論文で評価した構成の値を入れたもの（ベースライン RA は 400 秒間隔で MTU と RDNSS 付き、RA の送信元アドレスは 1 つ） |
 
 `setup.sh` 実行後、`config.yaml` が `$INSTALL_DIR`（デフォルト: `/opt/go-ra-server`）にデプロイされます。
 
