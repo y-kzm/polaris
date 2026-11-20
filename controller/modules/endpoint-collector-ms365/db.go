@@ -11,11 +11,19 @@ import (
 
 var db *sql.DB
 
+// dbPragmas are applied to every connection: wait up to 5 s for a lock
+// instead of failing with "database is locked", and use WAL so that readers
+// are not blocked while a refresh writes.
+const dbPragmas = "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+
 func initDB(dbPath string) error {
 	var err error
-	db, err = sql.Open("sqlite", dbPath)
+	db, err = sql.Open("sqlite", dbPath+"?"+dbPragmas)
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
+	}
+	if err := db.Ping(); err != nil {
+		return fmt.Errorf("open db %s: %w", dbPath, err)
 	}
 	return createSchema()
 }
@@ -70,8 +78,8 @@ func getLatestVersion(instance string) (string, error) {
 	return v.String, err
 }
 
-func upsertVersion(instance, version string) error {
-	_, err := db.Exec(`
+func upsertVersion(tx *sql.Tx, instance, version string) error {
+	_, err := tx.Exec(`
 		INSERT INTO versions (instance, latest, last_checked)
 		VALUES (?, ?, ?)
 		ON CONFLICT(instance) DO UPDATE SET latest = excluded.latest, last_checked = excluded.last_checked
@@ -84,13 +92,36 @@ type InsertStats struct {
 	EndpointSets int
 }
 
-func insertEndpointData(instance, version string, sets []MSEndpointSet) (InsertStats, error) {
+// storeEndpointData replaces the data of (instance, version) with sets and
+// makes version the current one, in a single transaction: readers see
+// either the previous version or the complete new one. Rows of the same
+// version left by an earlier run are removed first.
+func storeEndpointData(instance, version string, sets []MSEndpointSet) (InsertStats, error) {
 	tx, err := db.Begin()
 	if err != nil {
 		return InsertStats{}, err
 	}
 	defer tx.Rollback()
 
+	for _, table := range []string{"records", "endpoint_set_meta"} {
+		if _, err := tx.Exec(`DELETE FROM `+table+` WHERE instance = ? AND source_version = ?`, instance, version); err != nil {
+			return InsertStats{}, fmt.Errorf("clear %s: %w", table, err)
+		}
+	}
+	stats, err := insertEndpointData(tx, instance, version, sets)
+	if err != nil {
+		return InsertStats{}, err
+	}
+	if err := upsertVersion(tx, instance, version); err != nil {
+		return InsertStats{}, fmt.Errorf("set current version: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return InsertStats{}, fmt.Errorf("commit: %w", err)
+	}
+	return stats, nil
+}
+
+func insertEndpointData(tx *sql.Tx, instance, version string, sets []MSEndpointSet) (InsertStats, error) {
 	var stats InsertStats
 	now := time.Now().UTC()
 
@@ -123,11 +154,15 @@ func insertEndpointData(instance, version string, sets []MSEndpointSet) (InsertS
 		}
 
 		for _, ip := range set.IPs {
+			value, family, ok := canonicalPrefix(ip)
+			if !ok {
+				continue // sanitizeEndpointSets removes these; never store one
+			}
 			res, err := tx.Exec(`
 				INSERT INTO records (instance, endpoint_set_id, type, value, source_version, first_seen)
 				VALUES (?, ?, ?, ?, ?, ?)
 				ON CONFLICT(instance, source_version, endpoint_set_id, type, value) DO NOTHING
-			`, instance, set.ID, classifyIP(ip), ip, version, now)
+			`, instance, set.ID, family, value, version, now)
 			if err != nil {
 				return InsertStats{}, fmt.Errorf("insert ip: %w", err)
 			}
@@ -137,7 +172,7 @@ func insertEndpointData(instance, version string, sets []MSEndpointSet) (InsertS
 		}
 	}
 
-	return stats, tx.Commit()
+	return stats, nil
 }
 
 func queryEndpoints(instance, version, recordType string, limit, offset int) ([]string, error) {

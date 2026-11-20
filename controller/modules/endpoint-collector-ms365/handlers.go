@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"path"
@@ -23,8 +25,9 @@ type serviceEndpointsResp struct {
 }
 
 type healthResp struct {
-	OK   bool   `json:"ok"`
-	Time string `json:"time"`
+	Status string `json:"status"`
+	OK     bool   `json:"ok"`
+	Time   string `json:"time"`
 }
 
 type refreshCounts struct {
@@ -72,84 +75,89 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-func getInstance(r *http.Request) string {
-	if v := r.URL.Query().Get("instance"); v != "" {
-		return v
+// getInstance returns the instance a request addresses: the ?instance=
+// parameter, restricted to the known Microsoft instances, or the default.
+func getInstance(r *http.Request) (string, error) {
+	v := r.URL.Query().Get("instance")
+	if v == "" {
+		return defaultInstance, nil
 	}
-	return defaultInstance
+	if !knownInstances[v] {
+		return "", errors.New("unknown instance (known: Worldwide, USGovDoD, USGovGCCHigh, China)")
+	}
+	return v, nil
+}
+
+// requestScope resolves the instance and the data version a read request
+// addresses. Without ?version= it is the current version; if none has been
+// loaded yet the answer is 503, never an empty 200. On failure it writes
+// the error response and returns ok=false. explicit reports whether the
+// version came from the request.
+func requestScope(w http.ResponseWriter, r *http.Request) (instance, version string, explicit, ok bool) {
+	instance, err := getInstance(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return "", "", false, false
+	}
+	if version = r.URL.Query().Get("version"); version != "" {
+		return instance, version, true, true
+	}
+	version, err = getLatestVersion(instance)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return "", "", false, false
+	}
+	if version == "" {
+		writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("no data loaded yet for instance %s", instance))
+		return "", "", false, false
+	}
+	return instance, version, false, true
 }
 
 // GET /health
 func handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, healthResp{OK: true, Time: time.Now().UTC().Format(time.RFC3339)})
+	writeJSON(w, http.StatusOK, healthResp{Status: "ok", OK: true, Time: time.Now().UTC().Format(time.RFC3339)})
 }
 
 // POST /refresh
 func handleRefresh(w http.ResponseWriter, r *http.Request) {
-	instance := getInstance(r)
-
-	prevVersion, err := getLatestVersion(instance)
+	instance, err := getInstance(r)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	latestRemote, err := fetchLatestVersion(instance, clientRequestID)
+	resp, err := refreshInstance(r.Context(), instance)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		status := http.StatusInternalServerError
+		var up *upstreamError
+		if errors.As(err, &up) {
+			status = http.StatusBadGateway
+		}
+		writeError(w, status, err.Error())
 		return
 	}
-
-	resp := refreshResp{
-		Instance:        instance,
-		PreviousVersion: prevVersion,
-		LatestRemote:    latestRemote,
-	}
-
-	if latestRemote == prevVersion {
-		writeJSON(w, http.StatusOK, resp)
-		return
-	}
-
-	sets, err := fetchEndpoints(instance, clientRequestID)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-
-	stats, err := insertEndpointData(instance, latestRemote, sets)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	if err := upsertVersion(instance, latestRemote); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	resp.Updated = true
-	resp.Counts = refreshCounts{Inserted: stats.Inserted, EndpointSets: stats.EndpointSets}
 	writeJSON(w, http.StatusOK, resp)
 }
 
 // GET /api/fqdn/services
 func handleListServices(w http.ResponseWriter, r *http.Request) {
-	instance := getInstance(r)
-	version := r.URL.Query().Get("version")
-
-	if version == "" {
-		var err error
-		version, err = getLatestVersion(instance)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
+	instance, version, explicit, ok := requestScope(w, r)
+	if !ok {
+		return
 	}
 
 	services, err := queryServices(instance, version)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if len(services) == 0 {
+		if explicit {
+			writeError(w, http.StatusNotFound, fmt.Sprintf("no data for version %s of instance %s", version, instance))
+		} else {
+			writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("no services loaded for instance %s", instance))
+		}
 		return
 	}
 
@@ -167,21 +175,18 @@ func handleListServices(w http.ResponseWriter, r *http.Request) {
 // GET /api/fqdn/services/{name}/endpoints
 func handleServiceEndpoints(w http.ResponseWriter, r *http.Request) {
 	serviceArea := r.PathValue("name")
-	instance := getInstance(r)
-	version := r.URL.Query().Get("version")
-
-	if version == "" {
-		var err error
-		version, err = getLatestVersion(instance)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
+	instance, version, _, ok := requestScope(w, r)
+	if !ok {
+		return
 	}
 
 	se, err := queryServiceEndpoints(instance, version, serviceArea)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if len(se.EndpointSetIDs) == 0 {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("unknown service %q", serviceArea))
 		return
 	}
 
@@ -194,8 +199,10 @@ func handleServiceEndpoints(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/endpoints
 func handleListEndpoints(w http.ResponseWriter, r *http.Request) {
-	instance := getInstance(r)
-	version := r.URL.Query().Get("version")
+	instance, version, _, ok := requestScope(w, r)
+	if !ok {
+		return
+	}
 	recordType := r.URL.Query().Get("type")
 
 	limit := 5000
@@ -208,15 +215,6 @@ func handleListEndpoints(w http.ResponseWriter, r *http.Request) {
 	if o := r.URL.Query().Get("offset"); o != "" {
 		if n, err := strconv.Atoi(o); err == nil && n >= 0 {
 			offset = n
-		}
-	}
-
-	if version == "" {
-		var err error
-		version, err = getLatestVersion(instance)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
 		}
 	}
 
@@ -245,16 +243,9 @@ func handleEDL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	instance := getInstance(r)
-	version := r.URL.Query().Get("version")
-
-	if version == "" {
-		var err error
-		version, err = getLatestVersion(instance)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
+	instance, version, _, ok := requestScope(w, r)
+	if !ok {
+		return
 	}
 
 	items, err := queryEndpoints(instance, version, edlType, 100000, 0)
@@ -276,16 +267,9 @@ func handleEndpointsMap(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "fqdn parameter required")
 		return
 	}
-	instance := getInstance(r)
-	version := r.URL.Query().Get("version")
-
-	if version == "" {
-		var err error
-		version, err = getLatestVersion(instance)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
+	instance, version, _, ok := requestScope(w, r)
+	if !ok {
+		return
 	}
 
 	allFQDNs, err := queryEndpoints(instance, version, "fqdn", 100000, 0)
@@ -332,7 +316,8 @@ func handleEndpointsMap(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /api/dns/resolve
+// GET /api/dns/resolve — registered only when ENABLE_DNS_RESOLVE=1: it
+// resolves any name for any caller.
 func handleDNSResolve(w http.ResponseWriter, r *http.Request) {
 	fqdn := r.URL.Query().Get("fqdn")
 	if fqdn == "" {
@@ -340,7 +325,7 @@ func handleDNSResolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	addrs, err := net.LookupHost(fqdn)
+	addrs, err := net.DefaultResolver.LookupHost(r.Context(), fqdn)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
