@@ -25,6 +25,10 @@ manage_nptv6 = false                 # true: install the NPTv6 rules; false: the
 [policy]
 g1_hosts = 50
 default_dst = "2001:db8::1"          # with a real upstream: an address that answers ping, outside D1
+# d1 = ["2001:db8:d1::/48"]          # default: the seven Microsoft Teams prefixes of the paper
+# d1_dst = "2001:db8:d1::1"          # with a real upstream: an address INSIDE d1 that answers ping.
+                                     # Default: the first address of the first prefix, which does
+                                     # not answer on the Internet (the transition experiment pings it).
 
 [ra]
 baseline_interval_ms = 400000
@@ -35,7 +39,7 @@ router_lifetime_s = 1800
 kind = "real"                        # "emulated" if your testbed has its own ISP/server emulation
 [upstream.urls]                      # fetched with curl -6 by the forwarding experiment
 default = "https://ifconfig.co/ip"   # must answer with the client address
-# d1 = "https://teams.microsoft.com/"  # must resolve to an address inside the FIRST prefix of policy.d1;
+# d1 = "https://teams.microsoft.com/"  # must resolve to addresses inside policy.d1;
                                        # it is checked by packet counts only
 
 [[router]]

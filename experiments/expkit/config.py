@@ -63,6 +63,7 @@ class Config:
     lan_prefix: str
     d1: tuple[str, ...]
     default_dst: str
+    d1_dst: str  # an address inside D1 that answers ping; "" = the first address of the first prefix
     ra: RaParams
     upstream: str  # "emulated" or "real"
     urls: dict[str, str]  # real upstream: {"default": url, "d1": url}
@@ -86,6 +87,11 @@ class Config:
     def d1_dsts(self) -> tuple[str, ...]:
         """One probe address inside each D1 prefix."""
         return tuple(str(ipaddress.ip_network(p)[1]) for p in self.d1)
+
+    @property
+    def d1_probe(self) -> str:
+        """The D1 destination that experiments send traffic to."""
+        return self.d1_dst or self.d1_dsts[0]
 
     def exp(self, name: str) -> dict[str, Any]:
         """Return the settings of one experiment (may be empty)."""
@@ -111,6 +117,16 @@ def _go_ra_dir(raw: str) -> Path:
         "go-ra source not found. Run `git submodule update --init` in the repository root, "
         "or set go_ra_dir in the configuration."
     )
+
+
+def _d1_dst(raw: str, d1: tuple[str, ...]) -> str:
+    """Check that the D1 probe destination, if given, lies inside D1."""
+    if not raw:
+        return ""
+    addr = ipaddress.ip_address(raw)
+    if not any(addr in ipaddress.ip_network(p) for p in d1):
+        raise ExpError(f"policy.d1_dst {raw} is not inside any prefix of policy.d1")
+    return str(addr)
 
 
 def _routers(raw: list[dict[str, Any]], mode: str) -> tuple[RouterCfg, ...]:
@@ -178,6 +194,7 @@ def load(path: Path) -> Config:
             lan_prefix=site.get("lan_prefix", "fd00:1::/64"),
             d1=tuple(policy.get("d1", PAPER_D1)),
             default_dst=policy.get("default_dst", "2001:db8::1"),
+            d1_dst=_d1_dst(policy.get("d1_dst", ""), tuple(policy.get("d1", PAPER_D1))),
             ra=RaParams(**raw.get("ra", {})),
             upstream=kind,
             urls=dict(upstream.get("urls", {})),

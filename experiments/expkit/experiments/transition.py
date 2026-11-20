@@ -48,7 +48,7 @@ def _order(recording: Recording, host: int, new_gw: str, old_gw: str, since: flo
 
 def _phase(cfg: Config, site: Site, out: Run, name: str, target: Scenario, moves: dict[str, tuple[str, str]]) -> list[list]:
     """Apply `target` while recording. moves maps a group to its (old, new) router key ("" = none)."""
-    dsts = (cfg.default_dst, cfg.d1_dsts[0])
+    dsts = (cfg.default_dst, cfg.d1_probe)
     interval = float(cfg.exp("transition").get("ping_interval_s", 0.1))
     captures = {k: Capture(r.node, r.cfg.wan_if, FILTER_ECHO, f"tr-{k}") for k, r in site.routers.items()}
     start_all(list(captures.values()))

@@ -155,7 +155,7 @@ def isp_script(r: RouterCfg) -> str:
 def server_script(cfg: Config) -> str:
     """Configure the emulated Internet server: probe addresses and per-ISP return routes."""
     lines = [f"ip -6 addr replace {SRV_CORE}/64 dev eth0 nodad"]
-    lines += [f"ip -6 addr replace {dst}/128 dev lo" for dst in (*cfg.d1_dsts, cfg.default_dst)]
+    lines += [f"ip -6 addr replace {dst}/128 dev lo" for dst in sorted({*cfg.d1_dsts, cfg.d1_probe, cfg.default_dst})]
     lines += [f"ip -6 route replace {r.isp_prefix} via fd10:ffff::{r.key} dev eth0" for r in cfg.routers]
     return "\n".join(lines)
 
