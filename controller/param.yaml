@@ -1,40 +1,55 @@
-# ─── Backend: ra-controller ──────────────────────────────────────────────────
+# Configuration of the RA controller. This is the only file to edit:
+#   docker compose up -d        (or ./server.sh without Docker)
+# starts every module enabled here and the backend. See ../docs/design.md.
+
+# ─── Backend: REST API, policy engine and web UI ─────────────────────────────
 backend:
-  port: 8080
-  db_path: controller.db
-  fetch_interval: 10          # neighbor poll interval (seconds)
-  neighbor_ifname: ""         # e.g. "eth0" — empty means no ifname filter
+  port: 8080                  # web UI and API: http://<this host>:8080
+  listen_host: ""             # "" = every interface; "127.0.0.1" = this host only
+  data_dir: ./data            # database and module caches
+  fetch_interval: 10          # seconds between fetches from the neighbor sources
+  reconcile_interval: 60      # seconds between re-applies of the applied policy; 0 = off
+  cors_origins: []            # other origins allowed to call the API (none needed for the built-in UI)
 
 # ─── Modules ─────────────────────────────────────────────────────────────────
-# Set enabled: true to activate a module. Each module must have a unique port.
-# name must match the directory under modules/ (underscores → hyphens).
+# A module is a separate process that the backend queries over HTTP.
+# Set enabled: true to start it. Each module needs its own port.
+# Modules listen on 127.0.0.1 unless listen_host is set.
+# The name must match the directory under modules/ (underscores → hyphens).
 modules:
+  # Hosts on the site link, read from the routers' neighbor caches over SNMP.
+  neighbor_collector_snmp:
+    enabled: false
+    port: 8084
+    poll_interval: 30         # seconds
+    stale_polls: 3            # a router that fails this many polls loses its hosts
+    target_timeout: 20        # seconds one router may take per poll
+    snmp_targets: []
+    # - host: "router-a.example.com"
+    #   port: 161             # default 161
+    #   community: "public"   # default "public"
+    #   ifname: "eth1"        # only neighbors on this interface (the site link)
+    #   self_ll: "fe80::1"    # the router's own link-local address on that link
+    #   label: "Router(a)"
+
+  # A fixed list of hosts (tests and small sites).
   neighbor_collector_static:
     enabled: true
     port: 8083
     neighbors: []
+    # - ip: "fe80::1"
+    #   lladdr: "02:00:00:00:00:01"
 
-  neighbor_collector_snmp:
-    enabled: true
-    port: 8084
-    poll_interval: 30  # seconds
-    # Routers to poll via SNMP.
-    # port defaults to 161, community defaults to "public" if omitted.
-    snmp_targets:
-      - host: "localhost"
-        port: 161
-        community: "public"
-    # - host: "router2.example.com"
-    #   port: 161
-    #   community: "private"
+  # Prefixes of Microsoft 365 services, from Microsoft's endpoint web service.
+  endpoint_collector_ms365:
+    enabled: false
+    port: 8085
+    db_path: m365_endpoints.db   # kept in data_dir
+    instance: Worldwide          # Worldwide, USGovDoD, USGovGCCHigh or China
+    refresh_interval: 3600       # seconds
 
+  # A fixed list of services (tests and small sites).
   endpoint_collector_static:
     enabled: true
     port: 8082
     services: []
-
-  endpoint_collector_ms365:
-    enabled: true
-    port: 8085
-    db_path: ./m365_endpoints.db
-    instance: Worldwide

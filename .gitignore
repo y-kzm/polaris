@@ -38,3 +38,14 @@ dist/
 # experiments
 experiments/results/
 experiments/.state-*.json
+
+# controller build output and local state
+controller/bin/
+controller/data/
+*.db
+*.db-shm
+*.db-wal
+
+# conflict copies made by file-sync tools ("name 2.go")
+* [2-9].*
+* [2-9]

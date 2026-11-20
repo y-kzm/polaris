@@ -1,0 +1,12 @@
+# Used by the lab images, whose build context is the repository root.
+.git
+**/node_modules/
+**/dist/
+**/__pycache__/
+controller/bin/
+controller/data/
+**/*.db
+experiments/results/
+# Conflict copies made by file-sync tools ("name 2.go"); they break Go builds
+**/* [2-9].*
+**/* [2-9]

@@ -1,0 +1,23 @@
+# The RA controller: web UI and API on http://<this host>:8080 (backend.port).
+#
+#   docker compose up -d          start (builds the image the first time)
+#   docker compose logs -f        follow the logs of every component
+#   docker compose down           stop; add -v to delete the database too
+#
+# Edit param.yaml to enable modules and set their targets, then
+#   docker compose restart
+services:
+  controller:
+    build: .
+    image: polaris-controller
+    # The backend must reach the routers' agents (gRPC, IPv6) and the SNMP
+    # module must reach the routers. Using the host's network avoids any
+    # dependence on Docker's IPv6 support. Linux only.
+    network_mode: host
+    volumes:
+      - ./param.yaml:/opt/polaris/param.yaml:ro
+      - polaris-data:/data
+    restart: unless-stopped
+
+volumes:
+  polaris-data: {}

@@ -1,5 +1,5 @@
 [Unit]
-Description=RA Controller (backend + collectors)
+Description=RA Controller (backend, web UI and modules)
 After=network-online.target
 Wants=network-online.target
 
@@ -11,8 +11,10 @@ Group=ra-controller
 # Update this path to match your actual installation directory.
 WorkingDirectory=/opt/ra-controller
 
-# Starts backend + collectors. Frontend (Vite dev server) is omitted in production.
-ExecStart=/opt/ra-controller/server.sh backend neighbor endpoint
+# Starts every module enabled in param.yaml and the backend, which also
+# serves the web UI. Run "./server.sh build" once after installing or
+# updating, so that this unit needs no toolchain.
+ExecStart=/opt/ra-controller/server.sh
 
 # Optional overrides — copy env.example to /etc/ra-controller/env and edit.
 EnvironmentFile=-/etc/ra-controller/env
@@ -20,7 +22,7 @@ EnvironmentFile=-/etc/ra-controller/env
 # Disable ANSI colour codes; systemd/journald handles plain text better.
 Environment=NO_COLOR=1
 
-# Restart the whole service if it crashes.
+# server.sh exits when any of its processes dies; restart the whole set.
 Restart=on-failure
 RestartSec=5
 
