@@ -134,6 +134,9 @@ sudo ./setup.sh
 ```
 
 `setup.sh` は `./setup.conf` があれば読み込みます（別のファイルは `-c FILE`）。
+設定は root の動作を決めるので、ファイルの所有者は root か `sudo` を実行したユーザーで、
+グループや他人から書き込めない状態である必要があります（`chmod go-w setup.conf`）。
+そうでない場合、`setup.sh` は読み込みを拒否します。
 ファイルは 1 行に 1 つの `KEY=VALUE` です。同じ名前の環境変数があればファイルより優先されるので、
 1 つだけ変えたいときは従来どおり `sudo RA_INTERVAL_MS=400000 ./setup.sh` のように指定できます。
 
@@ -154,7 +157,7 @@ sudo ./setup.sh
 | `POLICY_LL` | （空） | ポリシー RA の送信元アドレス（上記）。`LAN_IF` が必要 |
 | `OVERWRITE_CONFIG` | `no` | `yes` で `config.yaml` を書き直す。以前のファイルは `config.yaml.bak-<日時>` として残す |
 | `INSTALL_DIR` | `/opt/go-ra-server` | インストール先ディレクトリ |
-| `GO` | （自動で探す） | Go コンパイラのパス。`sudo` は `PATH` を引き継がないので、`setup.sh` は `/usr/local/go/bin` と実行ユーザーの Go のディレクトリも探す。別の場所にある場合は `GO` で指定する |
+| `GO` | （自動で探す） | Go コンパイラのパス。`sudo` は `PATH` を引き継がないので、`setup.sh` は `/usr/local/go/bin` と実行ユーザーの Go のディレクトリも探す。別の場所にある場合は `GO` で指定する。ビルドは root ではなく、`sudo` を実行したユーザーの権限で行う |
 | `GRPC_ADDR` | `localhost:50051` | gorad の gRPC リッスンアドレス |
 
 **3. RA 設定**
