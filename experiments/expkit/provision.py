@@ -75,7 +75,8 @@ def build(machine: Machine, cfg: Config, target: str, rebuild: bool) -> None:
     install_packages(machine, BUILD_PACKAGES)
     say(f"{machine.name}: building {target}")
     src = f"{cfg.workdir}/src/{target}"
-    machine.put_tree(local_dir, src, excludes=(".git", "node_modules", "*.db"))
+    # "* [2-9].*": conflict copies made by file-sync tools ("name 2.go") would break the build.
+    machine.put_tree(local_dir, src, excludes=(".git", "node_modules", "*.db", "* [2-9].*"))
     machine.sh(
         f"mkdir -p {cfg.workdir}/bin {cfg.workdir}/gocache\n"
         f"cd {src}\n"
@@ -150,7 +151,9 @@ def setup(cfg: Config, rebuild: bool = False) -> Site:
     site.ctl.sh(f"rm -f {cfg.workdir}/controller.db")
     site.ctl.spawn(
         "controller",
-        f"env PORT={cfg.controller_port} DB_PATH={cfg.workdir}/controller.db {cfg.workdir}/bin/controller",
+        # No periodic reconcile: an experiment must be the only thing that changes the routers.
+        f"env PORT={cfg.controller_port} DB_PATH={cfg.workdir}/controller.db RECONCILE_INTERVAL=0 "
+        f"{cfg.workdir}/bin/controller",
     )
     deadline = time.time() + 30
     while True:

@@ -89,18 +89,29 @@ done) &
 (
     api="http://controller-backend:8080/api"
     nc="http://neighbor-collector:8083/api"
+    body="{
+        \"name\": \"${ROUTER_LABEL}\", \"address\": \"${LAN_ADDR}\",
+        \"interface\": \"${LAN_IF}\", \"policy_source_address\": \"${POLICY_LL}\",
+        \"ra_interval_milliseconds\": ${RA_INTERVAL_MS}, \"current_hop_limit\": 64,
+        \"router_lifetime_seconds\": 1800,
+        \"reachable_time_milliseconds\": 30000, \"retransmit_time_milliseconds\": 1000
+    }"
     while true; do
-        if routers=$(curl -sf "$api/routers" 2>/dev/null) \
-           && ! echo "$routers" | grep -q "\"address\":\"${LAN_ADDR}\""; then
-            curl -sf -X POST "$api/routers" -H "Content-Type: application/json" -d "{
-                \"name\": \"${ROUTER_LABEL}\", \"address\": \"${LAN_ADDR}\",
-                \"interface\": \"${LAN_IF}\", \"policy_source_address\": \"${POLICY_LL}\",
-                \"ra_interval_milliseconds\": ${RA_INTERVAL_MS}, \"current_hop_limit\": 64,
-                \"router_lifetime_seconds\": 1800,
-                \"reachable_time_milliseconds\": 30000, \"retransmit_time_milliseconds\": 1000
-            }" >/dev/null \
-                && echo "[$HOSTNAME] registered ${ROUTER_LABEL} address=${LAN_ADDR} if=${LAN_IF} policy-ll=${POLICY_LL}" \
-                || echo "[$HOSTNAME] registration failed" >&2
+        if routers=$(curl -sf "$api/routers" 2>/dev/null); then
+            # This router's record, if any: one JSON object per line, matched by address.
+            mine=$(echo "$routers" | tr '}' '\n' | grep "\"address\":\"${LAN_ADDR}\"" || true)
+            if [ -z "$mine" ]; then
+                curl -sf -X POST "$api/routers" -H "Content-Type: application/json" -d "$body" >/dev/null \
+                    && echo "[$HOSTNAME] registered ${ROUTER_LABEL} address=${LAN_ADDR} if=${LAN_IF} policy-ll=${POLICY_LL}" \
+                    || echo "[$HOSTNAME] registration failed" >&2
+            elif ! echo "$mine" | grep -q "\"interface\":\"${LAN_IF}\""; then
+                # Docker may hand out the interface names in another order
+                # when the container restarts; the record must follow.
+                id=$(echo "$mine" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+                curl -sf -X PUT "$api/routers/$id" -H "Content-Type: application/json" -d "$body" >/dev/null \
+                    && echo "[$HOSTNAME] updated the registration: if=${LAN_IF}" \
+                    || echo "[$HOSTNAME] updating the registration failed" >&2
+            fi
         fi
         # Tell the neighbor collector which interface faces the hosts and
         # which address is the router itself.

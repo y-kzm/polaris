@@ -89,7 +89,6 @@ services:
       DB_PATH: /data/controller.db
       NEIGHBOR_API_URLS: "http://neighbor-collector:8083/api/neighbors"
       NEIGHBOR_SOURCE_NAMES: "internal-segment"
-      NEIGHBOR_IFNAME: ""
       FETCH_INTERVAL: "10"
     # The database lives on tmpfs: `./lab down` always returns to a clean lab.
     tmpfs: [/data]
@@ -115,6 +114,8 @@ services:
     environment:
       ADDR: ":8083"
       POLL_INTERVAL: "10"
+      # The lab routers tell the collector which interface faces the hosts.
+      ALLOW_TARGET_REGISTRATION: "1"
       SNMP_TARGETS: >-
         [{"host":"router1","port":161,"community":"public"},
          {"host":"router2","port":161,"community":"public"},
