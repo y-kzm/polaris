@@ -42,14 +42,14 @@ def _targets(cfg: Config) -> dict[str, tuple[str, str]]:
     """Return {target: (url, probe destination)}; the destination decides the designated router."""
     if cfg.upstream == "emulated":
         return {
-            "D1": (f"http://[{cfg.d1_dsts[0]}]/", cfg.d1_dsts[0]),
+            "D1": (f"http://[{cfg.d1_probe}]/", cfg.d1_probe),
             "default": (f"http://[{cfg.default_dst}]/", cfg.default_dst),
         }
     targets = {}
     if cfg.urls.get("default"):
         targets["default"] = (cfg.urls["default"], cfg.default_dst)
     if cfg.urls.get("d1"):
-        targets["D1"] = (cfg.urls["d1"], cfg.d1_dsts[0])
+        targets["D1"] = (cfg.urls["d1"], cfg.d1_probe)
     return targets
 
 

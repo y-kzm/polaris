@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run the Polaris experiments.
 
+    sudo ./exp check                 look at every machine first; changes nothing
     sudo ./exp setup                 build the site (namespaces, routers, controller, hosts)
     sudo ./exp run all               run every experiment
     sudo ./exp run verify failover   run selected experiments
@@ -26,7 +27,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from expkit import ExpError, Site, load  # noqa: E402
-from expkit import provision  # noqa: E402
+from expkit import preflight, provision  # noqa: E402
 from expkit.experiments import EXPERIMENTS  # noqa: E402
 from expkit.report import Run  # noqa: E402
 
@@ -38,6 +39,12 @@ def cmd_setup(args: argparse.Namespace) -> int:
     provision.setup(cfg, rebuild=args.rebuild)
     print(f"Ready after {time.time() - started:.0f} s.  Next: ./exp run all")
     return 0
+
+
+def cmd_check(args: argparse.Namespace) -> int:
+    cfg = load(args.config)
+    print(f"Checking ({cfg.mode} mode, {cfg.hosts} hosts, {cfg.upstream} upstream)")
+    return 0 if preflight.check(cfg) else 1
 
 
 def cmd_teardown(args: argparse.Namespace) -> int:
@@ -95,6 +102,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("-c", "--config", type=Path, default=HERE / "config" / "single.toml")
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("check", help="check every machine without changing anything").set_defaults(func=cmd_check)
     p = sub.add_parser("setup", help="build the site")
     p.add_argument("--rebuild", action="store_true", help="rebuild the binaries even if they exist")
     p.set_defaults(func=cmd_setup)
