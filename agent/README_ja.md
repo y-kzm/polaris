@@ -154,6 +154,7 @@ sudo ./setup.sh
 | `POLICY_LL` | （空） | ポリシー RA の送信元アドレス（上記）。`LAN_IF` が必要 |
 | `OVERWRITE_CONFIG` | `no` | `yes` で `config.yaml` を書き直す。以前のファイルは `config.yaml.bak-<日時>` として残す |
 | `INSTALL_DIR` | `/opt/go-ra-server` | インストール先ディレクトリ |
+| `GO` | （自動で探す） | Go コンパイラのパス。`sudo` は `PATH` を引き継がないので、`setup.sh` は `/usr/local/go/bin` と実行ユーザーの Go のディレクトリも探す。別の場所にある場合は `GO` で指定する |
 | `GRPC_ADDR` | `localhost:50051` | gorad の gRPC リッスンアドレス |
 
 **3. RA 設定**

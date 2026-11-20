@@ -164,6 +164,7 @@ line: `sudo RA_INTERVAL_MS=400000 ./setup.sh`.
 | `POLICY_LL` | (empty) | Source address of the policy RAs (see above). Needs `LAN_IF` |
 | `OVERWRITE_CONFIG` | `no` | `yes`: write `config.yaml` again; the previous file is kept as `config.yaml.bak-<date>` |
 | `INSTALL_DIR` | `/opt/go-ra-server` | Installation directory |
+| `GO` | (searched) | Path of the Go compiler. `sudo` does not keep your `PATH`, so `setup.sh` also looks in `/usr/local/go/bin` and in the Go directories of the invoking user; set `GO` if it is elsewhere |
 | `GRPC_ADDR` | `localhost:50051` | gRPC listen address for gorad |
 
 **3. The RA configuration**

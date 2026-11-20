@@ -44,4 +44,5 @@ POLICY_LL=
 
 # ── Service ──────────────────────────────────────────────────────────────────
 INSTALL_DIR=/opt/go-ra-server
+GO=                               # path of the Go compiler; empty: PATH, /usr/local/go/bin, ~/go/bin, ... are searched
 GRPC_ADDR=localhost:50051         # where gorad listens for the controller, e.g. [2001:db8:ffff::a]:50051

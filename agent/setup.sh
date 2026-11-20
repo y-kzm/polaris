@@ -15,7 +15,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 SETTINGS="INSTALL_DIR GRPC_ADDR WAN_PREFIX LAN_PREFIX WAN_IF LAN_IF POLICY_LL
 RA_INTERVAL_MS ROUTER_LIFETIME_S CUR_HOP_LIMIT REACHABLE_TIME_MS RETRANS_TIME_MS RA_MTU
-PREFIX_VALID_S PREFIX_PREFERRED_S RDNSS RDNSS_LIFETIME_S OVERWRITE_CONFIG"
+PREFIX_VALID_S PREFIX_PREFERRED_S RDNSS RDNSS_LIFETIME_S OVERWRITE_CONFIG GO"
 
 usage() {
   cat << USAGE
@@ -119,6 +119,31 @@ PREFIX_PREFERRED_S="${PREFIX_PREFERRED_S:-604800}"
 RDNSS="${RDNSS:-}"                             # comma-separated; empty: no RDNSS option
 RDNSS_LIFETIME_S="${RDNSS_LIFETIME_S:-1800}"
 OVERWRITE_CONFIG="${OVERWRITE_CONFIG:-no}"     # yes: replace an existing config.yaml (a backup is kept)
+
+# The Go compiler. sudo replaces PATH (secure_path), so a Go installation in
+# /usr/local/go or in the home directory of the invoking user is not found
+# through PATH; the usual places are searched. Set GO to name it explicitly.
+GO="${GO:-}"
+find_go() {
+  local candidate home=""
+  if [[ -n "$GO" ]]; then
+    [[ -x "$GO" ]] || { echo "Error: GO=$GO is not an executable file." >&2; exit 1; }
+    return
+  fi
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    home=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true)
+  fi
+  for candidate in "$(command -v go || true)" /usr/local/go/bin/go /usr/lib/go/bin/go /snap/bin/go \
+                   ${home:+"$home/go/bin/go" "$home/.local/go/bin/go" "$home/sdk/go/bin/go"}; do
+    if [[ -n "$candidate" && -x "$candidate" ]]; then
+      GO="$candidate"
+      return
+    fi
+  done
+  echo "Error: the Go compiler was not found (sudo does not keep your PATH)." >&2
+  echo "  Set GO to its path, in setup.conf or as:  sudo GO=\$(command -v go) ./setup.sh" >&2
+  exit 1
+}
 
 for name in RA_INTERVAL_MS ROUTER_LIFETIME_S CUR_HOP_LIMIT REACHABLE_TIME_MS RETRANS_TIME_MS RA_MTU \
             PREFIX_VALID_S PREFIX_PREFERRED_S RDNSS_LIFETIME_S; do
@@ -266,6 +291,9 @@ if [[ -n "$POLICY_LL" && -z "$BASE_LL" ]]; then
   echo "Error: $LAN_IF has no link-local address of its own; it is needed as the source of the baseline RA." >&2
   exit 1
 fi
+find_go
+echo "Go compiler       : $GO"
+echo
 
 # --- Kernel parameters ---
 echo "=== Kernel Parameters ==="
@@ -325,7 +353,7 @@ if [[ ! -d "$GORA_SRC" ]]; then
   exit 1
 fi
 
-(cd "$GORA_SRC" && go build -o gorad ./cmd/gorad)
+(cd "$GORA_SRC" && "$GO" build -o gorad ./cmd/gorad)
 echo "Built: $GORA_SRC/gorad"
 echo
 
