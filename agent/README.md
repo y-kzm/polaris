@@ -149,16 +149,21 @@ the user who calls `sudo`, and must not be writable by group or others
 The file holds one `KEY=VALUE` per line. An environment variable of the same
 name overrides the file, so a single value can still be set on the command
 line: `sudo RA_INTERVAL_MS=400000 ./setup.sh`.
+`WAN_IF`, `WAN_PREFIX` and `LAN_PREFIX` have no default; `setup.sh` stops before
+changing anything if one of them is missing.
+
+Keep the checkout in a directory that only you can write to: `setup.sh` and
+its settings file are run and read as root.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `WAN_IF` | `enp2s0` | Network interface facing the WAN |
-| `WAN_PREFIX` | `2001:2f8:1c0:7040::/64` | WAN-side IPv6 prefix for NPTv6 |
-| `LAN_PREFIX` | `2001:cafe:dead:beef::/64` | LAN-side IPv6 prefix for NPTv6, advertised in the baseline RA |
+| `WAN_IF` | (required) | Network interface facing the WAN |
+| `WAN_PREFIX` | (required) | WAN-side IPv6 prefix for NPTv6: the /64 the ISP delegated to this router |
+| `LAN_PREFIX` | (required) | LAN-side IPv6 prefix for NPTv6, advertised in the baseline RA |
 | `LAN_IF` | (empty) | Interface towards the hosts. When set, `setup.sh` writes the baseline RA configuration |
-| `RA_INTERVAL_MS` | `600000` | Interval of the unsolicited baseline RA |
+| `RA_INTERVAL_MS` | `600000` | Interval of the unsolicited baseline RA (MaxRtrAdvInterval; gorad sends at this fixed interval) |
 | `ROUTER_LIFETIME_S` | `1800` | Router Lifetime of the baseline RA |
-| `RA_MTU` | `1500` | MTU option; `0` omits it |
+| `RA_MTU` | `0` | MTU option (AdvLinkMTU); `0` omits it |
 | `RDNSS` | (empty) | DNS servers, comma-separated; empty omits the option |
 | `RDNSS_LIFETIME_S` | `1800` | Lifetime of the RDNSS option |
 | `PREFIX_VALID_S` / `PREFIX_PREFERRED_S` | `2592000` / `604800` | Lifetimes of the prefix |
@@ -169,6 +174,8 @@ line: `sudo RA_INTERVAL_MS=400000 ./setup.sh`.
 | `INSTALL_DIR` | `/opt/go-ra-server` | Installation directory |
 | `GO` | (searched) | Path of the Go compiler. `sudo` does not keep your `PATH`, so `setup.sh` also looks in `/usr/local/go/bin` and in the Go directories of the invoking user; set `GO` if it is elsewhere. The build runs as the user who called `sudo`, not as root |
 | `GRPC_ADDR` | `localhost:50051` | gRPC listen address for gorad |
+
+The defaults of the baseline RA are those of RFC 4861 (Section 6.2.1) and RFC 8106.
 
 **3. The RA configuration**
 

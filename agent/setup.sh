@@ -117,10 +117,22 @@ GRPC_ADDR="${GRPC_ADDR:-localhost:50051}"
 SERVICE_NAME="go-ra-server"
 SERVICE_USER="gorad"
 
-# NPTv6 parameters — set to match your network topology.
-WAN_PREFIX="${WAN_PREFIX:-2001:2f8:1c0:7040::/64}"
-LAN_PREFIX="${LAN_PREFIX:-2001:cafe:dead:beef::/64}"
-WAN_IF="${WAN_IF:-enp2s0}"
+# NPTv6 parameters. They describe this router's network and have no default:
+# a wrong prefix or interface would install translation rules for someone
+# else's addresses.
+WAN_PREFIX="${WAN_PREFIX:-}"
+LAN_PREFIX="${LAN_PREFIX:-}"
+WAN_IF="${WAN_IF:-}"
+MISSING=""
+for name in WAN_IF WAN_PREFIX LAN_PREFIX; do
+  if [[ -z "${!name}" ]]; then MISSING="$MISSING $name"; fi
+done
+if [[ -n "$MISSING" ]]; then
+  echo "Error: required setting(s) not set:$MISSING" >&2
+  echo "  Write them to a settings file:  cp setup.conf.example setup.conf  (then edit it)," >&2
+  echo "  or pass them as environment variables." >&2
+  exit 1
+fi
 
 # LAN-facing interface. With it, setup writes the baseline RA configuration
 # (config.yaml) from the settings below instead of installing go-ra's sample.
@@ -133,13 +145,18 @@ LAN_IF="${LAN_IF:-}"
 # Leave empty to skip (policy RAs then share the baseline address). Needs LAN_IF.
 POLICY_LL="${POLICY_LL:-}"
 
-# Baseline RA: sent to all hosts, preference medium, no routes.
+# Baseline RA: sent to all hosts, preference medium, no routes. The defaults
+# are those of RFC 4861 Section 6.2.1 (MaxRtrAdvInterval 600 s,
+# AdvDefaultLifetime 3 * MaxRtrAdvInterval, AdvReachableTime and
+# AdvRetransTimer 0, AdvLinkMTU 0 = no MTU option, prefix lifetimes 30 and
+# 7 days) and RFC 8106 (RDNSS lifetime 3 * MaxRtrAdvInterval).
+# gorad sends at a fixed interval; RA_INTERVAL_MS is that interval.
 RA_INTERVAL_MS="${RA_INTERVAL_MS:-600000}"
 ROUTER_LIFETIME_S="${ROUTER_LIFETIME_S:-1800}"
 CUR_HOP_LIMIT="${CUR_HOP_LIMIT:-64}"
 REACHABLE_TIME_MS="${REACHABLE_TIME_MS:-0}"
 RETRANS_TIME_MS="${RETRANS_TIME_MS:-0}"
-RA_MTU="${RA_MTU:-1500}"                       # 0: no MTU option
+RA_MTU="${RA_MTU:-0}"                          # 0: no MTU option
 PREFIX_VALID_S="${PREFIX_VALID_S:-2592000}"
 PREFIX_PREFERRED_S="${PREFIX_PREFERRED_S:-604800}"
 RDNSS="${RDNSS:-}"                             # comma-separated; empty: no RDNSS option
@@ -294,7 +311,7 @@ echo "LAN interface     : ${LAN_IF:-(not set — the sample config.yaml of go-ra
 echo "Policy RA source  : ${POLICY_LL:-(not set — shares the baseline address)}"
 if [[ -n "$LAN_IF" ]]; then
   echo "Baseline RA       : every ${RA_INTERVAL_MS} ms, Router Lifetime ${ROUTER_LIFETIME_S} s," \
-       "MTU ${RA_MTU}, RDNSS ${RDNSS:-(none)}"
+       "MTU option $([[ "$RA_MTU" == 0 ]] && echo "(none)" || echo "$RA_MTU"), RDNSS ${RDNSS:-(none)}"
 fi
 echo
 

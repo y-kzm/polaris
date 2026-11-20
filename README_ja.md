@@ -91,9 +91,9 @@ sysctl の設定および `gora` の systemd サービス化を自動で行い�
 ```bash
 cd agent
 git submodule update --init
-sudo WAN_PREFIX=2001:db8:wan::/64  \
-     LAN_PREFIX=fc00:cafe::/64     \
-     WAN_IF=eth0  ./setup.sh
+cp setup.conf.example setup.conf     # then edit: WAN_IF, WAN_PREFIX, LAN_PREFIX, LAN_IF, ...
+sudo ./setup.sh --print-config      # shows what would be written; changes nothing
+sudo ./setup.sh
 ```
 
 運用ガイドは [`agent/README_ja.md`](agent/README_ja.md) を参照してください。
