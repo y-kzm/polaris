@@ -47,7 +47,10 @@ scp tools/watchdog.py   <router-b>:~/px/
 | `$WAN_A`、`$WAN_B` | ルータ(a)、(b) の上流インターフェース | `enp1s0` |
 | `$BR` | エミュレータで、ホストの netns がつながるブリッジ | `br0` |
 | `$DST` | D1 に含まれない宛先。ping に応答し、HTTP で接続元アドレスを返す | `2001:db8::1` |
-| `$DST_D1` | D1 の中のアドレス。HTTP で応答する | `2603:1027::1` |
+| `$DST_D1_LIST` | D1 の各 prefix の中のアドレスを 1 つずつ、空白区切りで並べたもの（7 個）。どれも HTTP で接続元アドレスを返す | `"2603:1027::1 2603:1037::1 2603:1047::1 2603:1057::1 2603:1063::1 2620:1ec:40::1 2620:1ec:6::1"` |
+
+`$DST_D1_LIST` の 7 個のアドレスは、`$DST` と同じ web サーバに付け、両方の上流網からそのサーバへ届くようにしておきます
+（サーバ: `ip -6 addr add <アドレス>/128 dev lo`、上流側のルータ: D1 の各 prefix をサーバへ向ける経路）。
 
 ---
 
@@ -75,8 +78,8 @@ scp tools/watchdog.py   <router-b>:~/px/
 ```
 
 - `ll`: 各ルータが RA の送信元に使うリンクローカルアドレス。ルータで `ip -6 addr show dev <LAN 側> scope link`。
-- `ingress_drops`: 上流網の ingress filter が破棄したパケット数。**読み取れない場合はこの行を消します**
-  （その場合は 4.3 を参照）。
+- `ingress_drops`: 上流網の ingress filter が破棄したパケット数。記録用で、原稿では使いません。
+  読み取れない場合はこの行を消します。
 
 ### 1.2 ホストのリンクローカルアドレスの一覧
 
@@ -107,16 +110,19 @@ chronyc tracking | grep -E "System time|Last offset"
 
 ## 2. R1-4: 転送の確認（forwarding）
 
-「ポリシー適用前」「適用後」のそれぞれで、D1 内の宛先と D1 外の宛先に、全ホストから HTTP 要求を 1 回ずつ送ります。
-合計 4 回の測定です。各測定で、ホスト i は送信元ポート `port-base + i` を使います
+「ポリシー適用前」「適用後」のそれぞれで、D1 の 7 つの prefix それぞれの中の宛先と、D1 外の宛先 1 つに、
+全ホストから HTTP 要求を 1 回ずつ送ります。宛先は 8 個、測定は 2 回（適用前、適用後）です。
+ホスト i は送信元ポート `port-base + i` を使います
 （NPTv6 は送信元プレフィクスを書き換えるので、上流側ではポートでホストを見分けます）。
+port-base は宛先ごとに変えるので、キャプチャは 1 回の測定につきルータごとに 1 本で足ります。
 
-| 測定 | タグ | port-base | 宛先 |
-|---|---|---|---|
-| 適用前、D1 | `before_D1` | 21000 | `$DST_D1` |
-| 適用前、D1 外 | `before_default` | 22000 | `$DST` |
-| 適用後、D1 | `after_D1` | 23000 | `$DST_D1` |
-| 適用後、D1 外 | `after_default` | 24000 | `$DST` |
+| 宛先 | タグ（適用前 / 適用後） | port-base（適用前 / 適用後） |
+|---|---|---|
+| `$DST_D1_LIST` の n 番目（n = 1〜7） | `before_D1-n` / `after_D1-n` | 10000 + n × 1000 = 11000〜17000 / 20000 + n × 1000 = 21000〜27000 |
+| `$DST`（D1 外） | `before_default` / `after_default` | 18000 / 28000 |
+
+port-base はすべて 32768 未満にしています。それ以上は Linux が他の通信の送信元ポートに自動で割り当てる範囲で、
+上流インターフェースを通る別の通信（SSH など）がキャプチャに混ざり、ホストの通信として数えられるおそれがあるためです。
 
 ### 2.1 適用前の状態を作る
 
@@ -134,25 +140,33 @@ sudo -E python3 ~/px/hostprobe.py snapshot --hosts 1,51 --dst $DST | python3 -m 
 
 デフォルト経路が 2 つ（両ルータ、`pref medium`）だけで、D1 の経路がないことを確認します。
 
-### 2.2 1 回の測定（4 回繰り返す）
+### 2.2 1 回の測定（適用前と適用後の 2 回）
 
-以下は `before_D1`（port-base 21000）の例です。タグ、port-base、宛先を表のとおりに変えて 4 回行います。
+以下は適用前（`PHASE=before`、port-base 11000〜18000）の例です。適用後は `PHASE=after`、`BASE=20000` にします。
 
 **(1) 両ルータでキャプチャを開始**（それぞれの端末で）
 
 ```sh
-# ルータ(a)
-sudo tcpdump -i $WAN_A -nn -tt -l -B 16384 'ip6 and tcp and portrange 21001-21200' > wan_a_before_D1.txt
-# ルータ(b)
-sudo tcpdump -i $WAN_B -nn -tt -l -B 16384 'ip6 and tcp and portrange 21001-21200' > wan_b_before_D1.txt
+# ルータ(a)  適用後は portrange 21001-28200、ファイル名は wan_a_after.txt
+sudo tcpdump -i $WAN_A -nn -tt -l -B 16384 'ip6 and tcp and portrange 11001-18200' > wan_a_before.txt
+# ルータ(b)  適用後は portrange 21001-28200、ファイル名は wan_b_after.txt
+sudo tcpdump -i $WAN_B -nn -tt -l -B 16384 'ip6 and tcp and portrange 11001-18200' > wan_b_before.txt
 ```
 
 `listening on …` と表示されるまで待ちます。
 
-**(2) エミュレータで要求を送る**
+**(2) エミュレータで、8 個の宛先に順に要求を送る**
 
 ```sh
-sudo -E python3 ~/px/hostprobe.py curl --hosts 1-200 --url "http://[$DST_D1]/" --port-base 21000 > curl_before_D1.json
+PHASE=before; BASE=10000          # 適用後は PHASE=after; BASE=20000
+n=1
+for dst in $(echo $DST_D1_LIST); do     # $(echo …) は zsh でも空白で区切るため
+  sudo -E python3 ~/px/hostprobe.py curl --hosts 1-200 --url "http://[$dst]/" \
+       --port-base $((BASE + n * 1000)) > curl_${PHASE}_D1-$n.json
+  n=$((n + 1))
+done
+sudo -E python3 ~/px/hostprobe.py curl --hosts 1-200 --url "http://[$DST]/" \
+     --port-base $((BASE + 8000)) > curl_${PHASE}_default.json
 ```
 
 URL がホスト名の場合は、`--resolve '<ホスト名>:443:[<アドレス>]'` で宛先アドレスを固定できます。
@@ -162,7 +176,8 @@ URL がホスト名の場合は、`--resolve '<ホスト名>:443:[<アドレス>
 ### 2.3 ポリシーを適用する
 
 1. controller で評価シナリオのポリシーを適用する（G1 = ホスト 1〜50 は D1 を Router(a)、G2 = 51〜200 はデフォルトを Router(b)）。
-2. **適用の直後に** 2.2 の測定を `after_D1`、`after_default` の順に行う。
+2. **適用の直後に** 2.2 の測定を `PHASE=after`、`BASE=20000` で行う。8 個の宛先で 40 秒を超える場合があるので、
+   下の注意のとおり、測定の前後で `pref high` を確認する。
 
 > **1 アドレス設計での注意**: G2 の `pref high` は、ルータ(b) の次の baseline RA で `medium` に戻ります。
 > 測定の前後に次のコマンドで、ホスト 51 のデフォルト経路に `pref high` があることを確認してください。
@@ -174,19 +189,27 @@ URL がホスト名の場合は、`--resolve '<ホスト名>:443:[<アドレス>
 
 ### 2.4 ファイルを集める
 
-`~/manual/forwarding/` に次の 13 ファイルを置きます。
+`~/manual/forwarding/` に次の 21 ファイルを置きます。
 
 ```
-curl_before_D1.json   curl_before_default.json   curl_after_D1.json   curl_after_default.json
-wan_a_before_D1.txt   wan_a_before_default.txt   wan_a_after_D1.txt   wan_a_after_default.txt
-wan_b_before_D1.txt   wan_b_before_default.txt   wan_b_after_D1.txt   wan_b_after_default.txt
+curl_before_D1-1.json … curl_before_D1-7.json   curl_before_default.json
+curl_after_D1-1.json  … curl_after_D1-7.json    curl_after_default.json
+wan_a_before.txt   wan_b_before.txt   wan_a_after.txt   wan_b_after.txt
 ports.json
 ```
 
-`ports.json` は次の内容です（表と同じ値）。
+`ports.json` は次の内容です（表と同じ値）。次のコマンドで作れます。
 
-```json
-{"before_D1": 21000, "before_default": 22000, "after_D1": 23000, "after_default": 24000}
+```sh
+python3 - > ports.json <<'EOF'
+import json
+ports = {}
+for phase, base in (("before", 10000), ("after", 20000)):
+    for n in range(1, 8):
+        ports[f"{phase}_D1-{n}"] = base + n * 1000
+    ports[f"{phase}_default"] = base + 8000
+print(json.dumps(ports, indent=1))
+EOF
 ```
 
 ---
@@ -307,7 +330,7 @@ python3 tools/manual_analyze.py failover   ~/manual/failover   --site ~/manual/s
 
 | 実験 | 期待される結果 |
 |---|---|
-| forwarding | 800 / 800 応答。`after` の D1 は G1 が Router(a) のみ、G2 が Router(b) のみで、反対側のルータは `0 / 0` |
+| forwarding | 3,200 / 3,200 応答（200 台 × 8 宛先 × 2 回）。`after` の D1-1〜D1-7 は G1 が Router(a) のみ、G2 が Router(b) のみで、反対側のルータは `0 / 0` |
 | failover | 試行 10、測定数は約 1,700〜1,800（G2 の 150 台と、G1 のうちルータ(b) を選んでいた台数の 10 回分）、`not recovered` が 0 |
 
 `FAIL` の行が出た場合は、内容を確認して該当の測定をやり直します。
@@ -320,12 +343,8 @@ python3 data/make_values.py ~/manual/results
 latexmk -pdf main.tex && pdflatex response_to_reviewers.tex
 ```
 
-黄色の値、Table（転送の確認）、Table（切り替え時間）が実機の値に置き換わります。
+黄色の値、Figure（各ホストが通った出口の図）、Table（切り替え時間）が実機の値に置き換わります。
 その後、`main.tex` の 5 章にある著者向けの注記（黄色の枠）を削除します。
-
-**`site.json` から `ingress_drops` を消した場合**: `make_values.py` はエラーで止まります。
-`main.tex` の 5.1 節の文 "The ingress filters of the two upstream networks discarded … packets." と、
-`response_to_reviewers.tex` の同じ内容の句を削除し、`make_values.py` の該当の検査を外してください。
 
 ---
 
@@ -336,8 +355,7 @@ v2 の本文は、次の構成を前提に書いています。実機が違う�
 | 本文の記述 | 確認すること |
 |---|---|
 | 「両方の上流網から到達できる web サーバが、観測した送信元アドレスを返す」 | 応答の本文に接続元の IPv6 アドレスが含まれるか。含まれない宛先では、`ISP observed by the server` の列が `n/a` になる |
-| 「D1 の中のアドレスと 2001:db8::1 に要求を送る」 | 実際に使った宛先 |
-| 「上流網は ingress filtering を行う」 | 実機の上流網がそうなっているか |
+| 「D1 の 7 つの prefix それぞれの中のアドレスと 2001:db8::1 に要求を送る」 | 実際に使った宛先 |
 | 「エコー要求は 100 ms 間隔」 | `--interval 0.1` のままか |
 | 「ルータ(b) の監視プロセスが上流インターフェースのキャリアを監視し、失われたら RA デーモンを止める」 | `watchdog.py` を既定（`--mode link`）で使ったか |
 

@@ -39,17 +39,24 @@ def _isp_of(cfg: Config, body: str) -> str:
 
 
 def _targets(cfg: Config) -> dict[str, tuple[str, str]]:
-    """Return {target: (url, probe destination)}; the destination decides the designated router."""
+    """Return {target: (url, probe destination)}; the destination decides the designated router.
+
+    The targets are one address inside every prefix of D1 ("D1-1", "D1-2", ...)
+    and one destination outside D1 ("default").
+    """
     if cfg.upstream == "emulated":
-        return {
-            "D1": (f"http://[{cfg.d1_probe}]/", cfg.d1_probe),
-            "default": (f"http://[{cfg.default_dst}]/", cfg.default_dst),
-        }
+        targets = {f"D1-{n}": (f"http://[{dst}]/", dst) for n, dst in enumerate(cfg.d1_dsts, 1)}
+        targets["default"] = (f"http://[{cfg.default_dst}]/", cfg.default_dst)
+        return targets
     targets = {}
+    d1_urls = cfg.urls.get("d1") or []
+    if isinstance(d1_urls, str):
+        d1_urls = [d1_urls]
+    for n, url in enumerate(d1_urls, 1):
+        # A real upstream gives URLs, not addresses; every D1 address has the same designated router.
+        targets[f"D1-{n}"] = (url, cfg.d1_dsts[n - 1] if n <= len(cfg.d1_dsts) else cfg.d1_probe)
     if cfg.urls.get("default"):
         targets["default"] = (cfg.urls["default"], cfg.default_dst)
-    if cfg.urls.get("d1"):
-        targets["D1"] = (cfg.urls["d1"], cfg.d1_probe)
     return targets
 
 
@@ -62,13 +69,17 @@ def run(cfg: Config, site: Site, out: Run) -> None:
     keys = list(site.routers)
     targets = _targets(cfg)
     if not targets:
-        out.fail("a real upstream needs upstream.urls.default (and optionally upstream.urls.d1)")
+        out.fail("a real upstream needs upstream.urls.default (and optionally upstream.urls.d1, one URL per D1 prefix)")
         return
 
     detail, summary = [], []
     for phase, policy in (("before", EMPTY), ("after", scenario)):
         site.clean_state(policy)
         for target, (url, dst) in targets.items():
+            if policy.groups:
+                # With a shared RA source address, a baseline RA suspends a default-route
+                # policy until the next policy RA; start every round from the applied state.
+                site.wait_converged(policy)
             port_base = site.next_port_base()
             ports = f"portrange {port_base + 1}-{port_base + cfg.hosts}"
             captures = {

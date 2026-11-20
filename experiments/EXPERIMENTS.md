@@ -119,8 +119,8 @@ comment 4 (captures at both egress interfaces, bidirectional traffic tests).
 
 **Procedure**
 
-Before and after the policy, for a destination inside D1 and for the default
-destination (four runs):
+Before and after the policy, for one address inside each of the seven D1
+prefixes and for the default destination (16 runs):
 
 1. Start capturing the test connections on both routers' upstream interfaces.
 2. Every host sends an HTTP request with `curl -6`, several hosts in parallel.

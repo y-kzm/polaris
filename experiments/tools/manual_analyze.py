@@ -30,10 +30,12 @@ address per router: the single-address design). "host_ll" names a file with
 one "<host index> <link-local address>" pair per line. "ingress_drops" is
 optional; leave it out if the upstream networks' filters cannot be read.
 
-Measurement files, forwarding (phase = before|after, target = D1|default):
+Measurement files, forwarding (phase = before|after; target = D1-1, D1-2, ...
+for one address inside each prefix of D1, and default for one outside D1):
     curl_<phase>_<target>.json     output of `hostprobe.py curl`
-    wan_<router>_<phase>_<target>.txt   tcpdump -nn -tt text of the upstream interface
-    ports.json                     {"before_D1": 20000, ...}  the --port-base of each run
+    wan_<router>_<phase>.txt       tcpdump -nn -tt text of the upstream interface,
+                                   one capture per phase that covers all targets
+    ports.json                     {"before_D1-1": 21000, ...}  the --port-base of each run
 
 Measurement files, failover (one directory trial_01, trial_02, ... per trial):
     t_fail.txt      epoch time at which the upstream was broken (router clock)
@@ -132,25 +134,38 @@ def designated(site: dict[str, Any], phase: str, target: str, host: int) -> str:
         return ""
     first, second = list(site["routers"])[:2]
     if host <= site["g1_hosts"]:
-        return first if target == "D1" else ""
+        return first if target.startswith("D1") else ""
     return second
+
+
+def forwarding_targets(ports: dict[str, int]) -> list[str]:
+    """Return the targets named in ports.json; both phases must have the same ones."""
+    by_phase: dict[str, list[str]] = {"before": [], "after": []}
+    for tag in ports:
+        phase, _, target = tag.partition("_")
+        if phase not in by_phase or not target:
+            fail(f"ports.json: '{tag}' is not '<before|after>_<target>'")
+        by_phase[phase].append(target)
+    if not by_phase["before"] or sorted(by_phase["before"]) != sorted(by_phase["after"]):
+        fail("ports.json must name the same targets for 'before' and 'after'")
+    if len(set(ports.values())) != len(ports):
+        fail("ports.json: every run needs its own port base")
+    return by_phase["before"]
 
 
 def forwarding(src: Path, site: dict[str, Any], out: Path) -> None:
     keys = list(site["routers"])
     ports = json.loads(read(src / "ports.json"))
+    targets = forwarding_targets(ports)
     detail, summary, problems = [], [], []
     for phase in ("before", "after"):
-        for target in ("D1", "default"):
+        captures = {k: read(src / f"wan_{k}_{phase}.txt") for k in keys}
+        for target in targets:
             tag = f"{phase}_{target}"
-            if tag not in ports:
-                fail(f"ports.json has no entry '{tag}'")
             results = json.loads(read(src / f"curl_{tag}.json"))
             if len(results) != site["hosts"]:
                 fail(f"curl_{tag}.json has {len(results)} hosts, site.json says {site['hosts']}")
-            counts = {
-                k: count_tcp_by_port(read(src / f"wan_{k}_{tag}.txt"), int(ports[tag]), site["hosts"]) for k in keys
-            }
+            counts = {k: count_tcp_by_port(captures[k], int(ports[tag]), site["hosts"]) for k in keys}
             for res in results:
                 i = res["host"]
                 want = designated(site, phase, target, i)

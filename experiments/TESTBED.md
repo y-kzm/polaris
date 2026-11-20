@@ -89,7 +89,7 @@ cp config/testbed.example.toml config/testbed.toml
 | `router.fail_cmd`, `router.restore_cmd` | How to break and restore that router's upstream (default: `ip link set <wan_if> down` / `up`). Use these to act on a switch port or a remote device instead |
 | `upstream.kind` | `real` for real ISPs; `emulated` if your testbed has its own ISP and server emulation |
 | `upstream.urls.default` | With real ISPs: a URL fetched with `curl -6` that answers with the client's address (for example `https://ifconfig.co/ip`). It tells which ISP a host left through |
-| `upstream.urls.d1` | Optional: a URL whose addresses lie inside `policy.d1`. It is judged by packet counts only |
+| `upstream.urls.d1` | Optional: a URL whose addresses lie inside `policy.d1`, or a list with one URL per D1 prefix. It is judged by packet counts only |
 | `policy.default_dst` | An address **outside** D1 that answers ping. The failover and transition experiments ping it continuously |
 | `policy.d1_dst` | An address **inside** D1 that answers ping. Needed by the transition experiment; the default (first address of the first prefix) does not answer on the Internet |
 | `experiments.failover.testbed_confirmed` | Leave `false` until Section 5 is done |
