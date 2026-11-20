@@ -188,3 +188,15 @@ experiments/
 - **`N host(s) did not reach the '…' state`**: メッセージに最初の差分が出ます。
   ホストは `ip -n pxh001 -6 route show`、RA デーモンのログは
   `/var/tmp/polaris-exp/proc/gorad-a.err` で確認します。
+
+## 1 アドレス設計
+
+`config/single-address.toml` は、提出版の論文の設計（各ルータが policy RA を baseline RA と同じリンクローカル
+アドレスから送る、`site.single_address = true`）を再現します。`-c config/single-address.toml` で指定します。
+`load` と `spread` は 2 種類の RA を送信元アドレスで区別するため、この設計では実行できません。`transition` は、
+デフォルト経路の移動（既存エントリの優先度の書き換えだけ）については、経路変更の順序を判定しません。
+
+## 実機での手動実行
+
+`./exp` を使わず、実機で転送の確認と協調的な failover の 2 実験を手で行う手順は
+[MANUAL_ja.md](MANUAL_ja.md) にあります。結果は `tools/manual_analyze.py` でキットと同じ形式にまとめます。

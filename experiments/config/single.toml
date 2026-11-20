@@ -7,6 +7,7 @@ workdir = "/var/tmp/polaris-exp"
 [site]
 hosts = 200                          # emulated end hosts
 lan_prefix = "fd00:1::/64"           # site prefix; each router translates it (NPTv6)
+# single_address = true              # submitted paper: policy RAs leave from the baseline address
 
 [policy]
 g1_hosts = 50                        # G1 = host 1..50 (D1 via Router(a)), G2 = the rest (::/0 via Router(b))

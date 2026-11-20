@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 
 from ..capture import FILTER_RA, RA, Capture, parse_ras, start_all
-from ..config import Config
+from ..config import Config, ExpError
 from ..policy import DEFAULT, EMPTY, Group, Scenario
 from ..report import Run, describe, ms
 from ..site import Site
@@ -33,6 +33,9 @@ def _rounds(ras: list[RA], interval_s: float, size: int) -> list[list[RA]]:
 
 def run(cfg: Config, site: Site, out: Run) -> None:
     """Measure the spread for each (hosts, RIOs) condition."""
+    if cfg.single_address:
+        raise ExpError("spread tells policy RAs from baseline RAs by their source address; "
+                       "it does not support site.single_address")
     settings = cfg.exp("spread")
     interval_ms = int(settings.get("policy_interval_ms", 2_000))
     rounds_wanted = int(settings.get("rounds", 20))

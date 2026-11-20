@@ -70,6 +70,7 @@ class Run:
             "config_file": str(self.cfg.path),
             "mode": self.cfg.mode, "upstream": self.cfg.upstream,
             "hosts": self.cfg.hosts, "g1_hosts": self.cfg.g1_hosts,
+            "single_address": self.cfg.single_address,
             "ra": asdict(self.site.ra),
             "experiment_settings": self.cfg.exp(self.name),
             "polaris": _git(REPO_DIR), "go_ra": _git(self.cfg.go_ra_dir),

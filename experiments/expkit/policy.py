@@ -112,7 +112,9 @@ def parse_snapshot(raw: list[dict[str, Any]]) -> dict[int, HostState]:
 def mismatches(state: HostState, want: Expected, base_ll: dict[str, str], policy_ll: dict[str, str]) -> list[str]:
     """List the differences between a host's routes and the policy (empty if none).
 
-    base_ll and policy_ll map router keys to the two source addresses.
+    base_ll and policy_ll map router keys to the two source addresses. They
+    are equal in the single-address design, in which a policy RA changes the
+    preference of the router's only entry instead of adding one.
     """
     problems = []
     want_rio = {prefix: frozenset({policy_ll[router]}) for prefix, router in want.rio.items()}
@@ -128,7 +130,7 @@ def mismatches(state: HostState, want: Expected, base_ll: dict[str, str], policy
         problems.append(f"high-preference default routers {sorted(high)}, expected {sorted(want_high)}")
     medium = {gw for gw, pref in state.defaults if pref == "medium"}
     for key, ll in base_ll.items():
-        if ll not in medium:
+        if ll not in medium and ll not in want_high:
             problems.append(f"no medium-preference baseline entry for router {key}")
     stray = {gw for gw, _ in state.defaults} - set(base_ll.values()) - want_high
     if stray:

@@ -38,14 +38,18 @@ class Site:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
         self.ra = cfg.ra
-        self.shared_address = False
+        self.shared_address = cfg.single_address
         # RA parameters currently running; they outlive one `exp` invocation.
         self._state_file = EXP_DIR / f".state-{cfg.path.stem}.json"
         self._port_block = 0
+        # False until this configuration has started the routers itself: another
+        # configuration file may have left the same site in the other design.
+        self._state_known = False
         try:
             saved = json.loads(self._state_file.read_text())
             self.ra, self.shared_address = RaParams(**saved["ra"]), saved["shared_address"]
             self._port_block = saved.get("port_block", 0)
+            self._state_known = True
         except (OSError, ValueError, KeyError, TypeError):
             pass  # no state yet, or an unreadable file: assume the configured parameters
         self.local = Machine("local", "", cfg.workdir)
@@ -106,6 +110,15 @@ class Site:
             if gateway and gateway in (router.base_ll, router.cfg.policy_ll):
                 return key
         return ""
+
+    def policy_src(self, key: str) -> str:
+        """Return the source address of the policy RAs of a router.
+
+        It is the router's baseline address in the single-address design of
+        the submitted paper, and its policy address otherwise.
+        """
+        router = self.routers[key]
+        return router.base_ll if self.shared_address else router.cfg.policy_ll
 
     def host_range(self, hosts: int | None = None) -> str:
         """Return the hostprobe host specification for the first `hosts` hosts."""
@@ -225,6 +238,7 @@ class Site:
             self.repair(key)
             self.start_router(key)
         self.register()
+        self._state_known = True
         self._save_state()
         deadline = time.time() + 30
         while not self.ready():
@@ -232,11 +246,17 @@ class Site:
                 raise ExpError("the controller cannot reach every router (gRPC port 50051)")
             time.sleep(0.5)
 
-    def configure_ra(self, ra: RaParams | None = None, shared_address: bool = False, **changes: int) -> None:
-        """Switch to other RA parameters, leaving no state of the old ones on the hosts."""
+    def configure_ra(self, ra: RaParams | None = None, shared_address: bool | None = None, **changes: int) -> None:
+        """Switch to other RA parameters, leaving no state of the old ones on the hosts.
+
+        shared_address selects the single-address design; None keeps the
+        configured one (site.single_address).
+        """
         new = replace(ra or self.cfg.ra, **changes)
+        if shared_address is None:
+            shared_address = self.cfg.single_address
         alive = all(r.node.machine.alive(r.proc) for r in self.routers.values())
-        if new == self.ra and shared_address == self.shared_address and alive:
+        if new == self.ra and shared_address == self.shared_address and alive and self._state_known:
             return
         if alive:
             self.apply(EMPTY)
@@ -287,12 +307,15 @@ class Site:
         states = states or self.snapshot()
         want = expected(scenario, self.cfg.hosts)
         base = {k: r.base_ll for k, r in self.routers.items()}
-        pol = {k: r.cfg.policy_ll for k, r in self.routers.items()}
+        pol = {k: self.policy_src(k) for k in self.routers}
         found = {i: mismatches(states[i], want[i], base, pol) for i in states}
         return {i: p for i, p in found.items() if p}
 
     def wait_converged(self, scenario: Scenario, timeout: float = 30) -> None:
         """Wait until every host has exactly the routes the scenario designates."""
+        if self.shared_address:
+            # A baseline RA resets a high preference until the next policy RA.
+            timeout = max(timeout, self.ra.policy_interval_ms / 1000 + 15)
         deadline = time.time() + timeout
         while True:
             problems = self.problems(scenario)

@@ -71,8 +71,8 @@ def _phase(cfg: Config, site: Site, out: Run, name: str, target: Scenario, moves
         margins, reaction, switched = [], [], 0
         for i in members:
             margin, removed = _order(
-                recording, i, site.routers[new].cfg.policy_ll if new else "",
-                site.routers[old].cfg.policy_ll if old else "", float(started),
+                recording, i, site.policy_src(new) if new else "",
+                site.policy_src(old) if old else "", float(started),
             )
             if old and new and margin is not None:
                 margins.append(margin)
@@ -82,14 +82,17 @@ def _phase(cfg: Config, site: Site, out: Run, name: str, target: Scenario, moves
                 switched += 1
         stats, react = describe(margins), describe(reaction)
         ordered = sum(1 for m in margins if m > 0)
+        # With a single router address, moving the default route changes the
+        # preference of existing entries; no route is added or removed to order.
+        checkable = bool(old and new) and not (cfg.single_address and dst_index == 0)
         rows.append([
             name, group, len(members), f"{old or '–'} → {new or 'baseline'}", f"{lost}/{sent}",
-            f"{ordered}/{len(members)}" if old and new else "n/a",
+            f"{ordered}/{len(members)}" if checkable else "n/a",
             ms(stats["median"]), ms(stats["min"]), ms(react["median"]), ms(react["max"]),
         ])
         if lost:
             out.fail(f"{name}: {group} lost {lost} of {sent} pings during the transition")
-        if old and new and ordered != len(members):
+        if checkable and ordered != len(members):
             out.fail(f"{name}: on {len(members) - ordered} {group} host(s) the old route was not removed after the new one appeared")
         if new and switched != len(members):
             out.fail(f"{name}: only {switched}/{len(members)} {group} hosts sent traffic through Router({new}) afterwards")

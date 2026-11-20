@@ -26,8 +26,13 @@ from typing import Any
 WORKERS = 32
 
 
+# Namespace of host `index`. The kit creates pxh001, pxh002, ...; on a testbed
+# with its own host namespaces, set PX_NS_FORMAT (e.g. "host{}" or "ns{:03d}").
+NS_FORMAT = os.environ.get("PX_NS_FORMAT", "pxh{:03d}")
+
+
 def ns_name(index: int) -> str:
-    return f"pxh{index:03d}"
+    return NS_FORMAT.format(index)
 
 
 def run(cmd: list[str], timeout: float = 20) -> str:
