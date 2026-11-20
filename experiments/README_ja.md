@@ -30,6 +30,7 @@ sudo ./exp -c config/quick.toml run all
 
 | コマンド | 動作 |
 |----------|------|
+| `./exp check` | `setup` の前に各マシンを確認する（接続、時刻、インターフェース、使用中のポート）。何も変更しない |
 | `./exp setup [--rebuild]` | 不足パッケージの導入、`gorad` と controller のビルド、ネットワークの作成、サービスの起動を行い、全ホストにベースライン RA が届くまで待つ |
 | `./exp run <実験名>... \| all` | 実験を実施する（下の表） |
 | `./exp list` | 実験の一覧を表示する |
@@ -49,6 +50,8 @@ sudo ./exp -c config/quick.toml run all
 | `overwrite` | 指摘 1 | ポリシー RA が専用の送信元アドレスを使う場合と、ベースラインと同じアドレスを使う場合の、デフォルトルータ優先度の時間変化 | `overwrite.json` |
 | `transition` | 指摘 2 | ping を流したままポリシーを変更・削除したときの、損失数と経路変更の順序 | `summary.md` の表 |
 | `failover` | V-D 節、指摘 3 | 4 種類の障害での切り替え。検知・取り下げ・ホスト処理の時間に分ける | `failover_hosts.csv`、`timeline_<シナリオ>.csv` |
+
+各実験の手順・測定方法・判定の基準は **[EXPERIMENTS_ja.md](EXPERIMENTS_ja.md)** にまとめています。
 
 どの結果ディレクトリにも、`summary.md`（表示した内容）、`meta.json`（設定、カーネル、
 git のリビジョン、RA パラメータ）、`raw/`（キャプチャとログ）が入ります。
@@ -104,11 +107,9 @@ px-ctl（controller）─ br-mgmt ─ px-ra, px-rb
 各 ISP は、送信元アドレスが自分のプレフィクス外のパケットを捨てます。
 そのため、意図しないルータから出た通信には応答が返りません。
 
-testbed モードでは、全マシンで SSH 鍵ログインとパスワードなしの `sudo` が必要です。
-使う前に `config/testbed.example.toml` を読んでください。`setup` はプロセスを停止・起動し、
-各ルータの LAN インターフェースにリンクローカルアドレスを追加し、エミュレータの
-`emulator_uplink` をブリッジに接続します。このモードは実機なしで書いたもので、
-一度も実行していません。
+testbed モードには専用の手順書があります: **[TESTBED_ja.md](TESTBED_ja.md)**
+（必要なもの、先に止めるもの、設定、`./exp check`、`setup` が各マシンで変更するもの、
+障害実験の注意）。このモードは実機なしで書いたもので、一度も実行していません。
 
 ## 設定
 

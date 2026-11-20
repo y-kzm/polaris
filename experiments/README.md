@@ -32,6 +32,7 @@ experiment reports `FAIL`.
 
 | Command | What it does |
 |---------|--------------|
+| `./exp check` | Look at every machine before `setup` touches it: access, clocks, interfaces, ports in use. Changes nothing |
 | `./exp setup [--rebuild]` | Install missing packages, build `gorad` and the controller, create the network, start the services, wait until every host has received the baseline RAs |
 | `./exp run <name>... \| all` | Run experiments (see below) |
 | `./exp list` | List the experiments |
@@ -51,6 +52,9 @@ experiment reports `FAIL`.
 | `overwrite` | Comment 1 | Default-router preference over time when the policy RA uses its own source address, and when it shares the baseline's | `overwrite.json` |
 | `transition` | Comment 2 | Changing and removing a running policy under continuous pings: packets lost, order of route changes | tables in `summary.md` |
 | `failover` | Section V-D, comment 3 | Switch-over under four kinds of failure, split into detection, withdrawal and host time | `failover_hosts.csv`, `timeline_<scenario>.csv` |
+
+What each experiment does, measures and checks is described in
+**[EXPERIMENTS.md](EXPERIMENTS.md)**.
 
 Every run directory also holds `summary.md` (what was printed), `meta.json`
 (configuration, kernel, git revisions, RA parameters) and `raw/` (captures and logs).
@@ -107,11 +111,11 @@ Each router translates the site prefix to its ISP's prefix (NPTv6). Each ISP
 drops packets whose source address is outside its prefix, so traffic that
 leaves through the wrong router cannot be answered.
 
-Testbed mode needs, on every machine, SSH key login and password-less `sudo`.
-Read `config/testbed.example.toml` before using it: `setup` stops and starts
-processes, adds a link-local address to each router's LAN interface, and
-attaches `emulator_uplink` to a bridge on the emulator. It was written without
-access to such a testbed and has not been run.
+Testbed mode has its own step-by-step guide: **[TESTBED.md](TESTBED.md)**
+(requirements, what to stop first, the configuration, `./exp check`, what
+`setup` changes on each machine, and the precautions for the failover
+experiment). It was written without access to such a testbed and has not
+been run.
 
 ## Configuration
 
