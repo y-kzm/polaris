@@ -252,12 +252,13 @@ fi
 # this router's neighbor cache, which it reads over SNMP v2c. With
 # SNMP_COMMUNITY, setup installs snmpd (if missing) and writes its
 # configuration: read-only, only for the sources in SNMP_ALLOW_FROM, and only
-# for the tables the controller reads. Neither setting has a default: a
-# well-known community or "any source" would open the agent to everyone.
+# for the tables the controller reads. None of the three settings has a
+# default: a well-known community, "any source" or "every address" (which
+# includes the WAN side) would open the agent further than intended.
 # Empty SNMP_COMMUNITY: snmpd is not touched.
 SNMP_COMMUNITY="${SNMP_COMMUNITY:-}"
 SNMP_ALLOW_FROM="${SNMP_ALLOW_FROM:-}"           # comma-separated addresses or prefixes of the controller
-SNMP_LISTEN="${SNMP_LISTEN:-udp:161,udp6:161}"   # agentAddress of snmpd; the default is every address
+SNMP_LISTEN="${SNMP_LISTEN:-}"                   # agentAddress of snmpd, e.g. udp6:[2001:db8:ffff::a]:161
 SNMP_CONF="/etc/snmp/snmpd.conf"
 SNMP_MARK="# Written by polaris agent/setup.sh."
 SNMP_SOURCES=()
@@ -267,6 +268,18 @@ if [[ -n "$SNMP_COMMUNITY" ]]; then
   if [[ ! "$SNMP_COMMUNITY" =~ ^[A-Za-z0-9][A-Za-z0-9._@%+=-]*$ ]]; then
     echo "Error: SNMP_COMMUNITY must start with a letter or digit and may contain" \
          "letters, digits and . _ @ % + = - only." >&2; exit 1
+  fi
+  # The community is the only credential of SNMP v2c.
+  SNMP_LOWER=$(printf '%s' "$SNMP_COMMUNITY" | tr 'A-Z' 'a-z')
+  case "$SNMP_LOWER" in
+    public|private|community|snmp|snmpd|admin|default|password|secret|polaris|monitor|manager|cisco)
+      echo "Error: SNMP_COMMUNITY is a well-known word; choose your own (for example: openssl rand -hex 12)." >&2; exit 1 ;;
+  esac
+  if [[ ${#SNMP_COMMUNITY} -lt 12 ]]; then
+    echo "Error: SNMP_COMMUNITY must have at least 12 characters (for example: openssl rand -hex 12)." >&2; exit 1
+  fi
+  if ! command -v python3 > /dev/null; then
+    echo "Error: python3 is needed to check SNMP_ALLOW_FROM." >&2; exit 1
   fi
   if [[ -z "$SNMP_ALLOW_FROM" ]]; then
     echo "Error: SNMP_COMMUNITY needs SNMP_ALLOW_FROM (the address of the RA controller)." >&2; exit 1
@@ -283,12 +296,15 @@ if [[ -n "$SNMP_COMMUNITY" ]]; then
       echo "Error: SNMP_ALLOW_FROM: '$src' is not an IPv4 or IPv6 address or prefix." >&2; exit 1
     fi
     # snmpd skips a source it cannot parse and starts all the same, so check here.
-    if command -v python3 > /dev/null && ! python3 -c \
-         'import ipaddress, sys; ipaddress.ip_network(sys.argv[1], strict=False)' "$src" 2>/dev/null; then
+    if ! python3 -c 'import ipaddress, sys; ipaddress.ip_network(sys.argv[1], strict=False)' "$src" 2>/dev/null; then
       echo "Error: SNMP_ALLOW_FROM: '$src' is not a valid address or prefix." >&2; exit 1
     fi
   done
   SNMP_ALLOW_FROM="${SNMP_SOURCES[*]}"
+  if [[ -z "$SNMP_LISTEN" ]]; then
+    echo "Error: SNMP_COMMUNITY needs SNMP_LISTEN: the address the controller polls, such as" \
+         "udp6:[2001:db8:ffff::a]:161. (udp:161,udp6:161 listens on every address, the WAN side included.)" >&2; exit 1
+  fi
   if [[ ! "$SNMP_LISTEN" =~ ^[][A-Za-z0-9.:,_%-]+$ ]]; then
     echo "Error: SNMP_LISTEN must be an snmpd agentAddress such as udp6:[2001:db8:ffff::a]:161, got '$SNMP_LISTEN'." >&2; exit 1
   fi

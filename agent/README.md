@@ -179,7 +179,7 @@ its settings file are run and read as root.
 | `GRPC_ADDR` | `localhost:50051` | gRPC listen address for gorad |
 | `SNMP_COMMUNITY` | (empty) | Community string for the RA controller. When set, `setup.sh` sets up `snmpd` (see below); empty leaves `snmpd` untouched |
 | `SNMP_ALLOW_FROM` | (required with `SNMP_COMMUNITY`) | Address(es) or prefix(es) of the controller, comma-separated, IPv4 or IPv6 |
-| `SNMP_LISTEN` | `udp:161,udp6:161` | `agentAddress` of `snmpd`; for example `udp6:[2001:db8:ffff::a]:161` to listen on the management address only |
+| `SNMP_LISTEN` | (required with `SNMP_COMMUNITY`) | `agentAddress` of `snmpd`: this router's management address, for example `udp6:[2001:db8:ffff::a]:161`. `udp:161,udp6:161` listens on every address, the WAN side included |
 
 The defaults of the baseline RA are those of RFC 4861 (Section 6.2.1) and RFC 8106.
 
@@ -222,8 +222,9 @@ An `snmpd.conf` that `setup.sh` did not write is kept as
 `snmpd` on the router have to be merged by hand.
 
 The community string works like a password and is sent in clear text (SNMP
-v2c): keep `setup.conf` private (`chmod 600 setup.conf`), do not use `public`,
-and keep SNMP on the management network. `--print-config` does not show it.
+v2c): keep `setup.conf` private (`chmod 600 setup.conf`) and keep SNMP on the
+management network. `setup.sh` refuses a community shorter than 12 characters
+or a well-known word such as `public`; `openssl rand -hex 12` gives a suitable one. `--print-config` does not show it.
 If a firewall is active on the router, allow UDP port 161 from the controller;
 `setup.sh` does not change firewall rules.
 

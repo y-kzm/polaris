@@ -51,6 +51,7 @@ GO=
 # ── SNMP agent (snmpd) ───────────────────────────────────────────────────────
 # The RA controller reads the hosts from this router's neighbor cache over
 # SNMP. Empty SNMP_COMMUNITY: snmpd is not set up.
-SNMP_COMMUNITY=                   # EDIT: the community the controller uses (works like a password; not "public")
+SNMP_COMMUNITY=                   # EDIT: the community the controller uses (works like a password;
+                                  #       at least 12 characters, e.g. openssl rand -hex 12)
 SNMP_ALLOW_FROM=2001:db8:ffff::c  # EDIT: the address of the RA controller on the management network
 SNMP_LISTEN=udp6:[2001:db8:ffff::a]:161   # EDIT: this router's management address (the one of GRPC_ADDR)

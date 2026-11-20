@@ -169,7 +169,7 @@ root として実行・読み込みされます。
 | `GRPC_ADDR` | `localhost:50051` | gorad の gRPC リッスンアドレス |
 | `SNMP_COMMUNITY` | （空） | RA コントローラ用の community 文字列。設定すると `setup.sh` が `snmpd` を設定する（下記）。空なら `snmpd` には触れない |
 | `SNMP_ALLOW_FROM` | （`SNMP_COMMUNITY` を設定した場合は必須） | コントローラのアドレスまたはプレフィクス（カンマ区切り、IPv4 と IPv6） |
-| `SNMP_LISTEN` | `udp:161,udp6:161` | `snmpd` の `agentAddress`。管理用アドレスだけで待ち受ける場合は `udp6:[2001:db8:ffff::a]:161` のように指定する |
+| `SNMP_LISTEN` | （`SNMP_COMMUNITY` を設定した場合は必須） | `snmpd` の `agentAddress`。このルータの管理用アドレスを `udp6:[2001:db8:ffff::a]:161` のように指定する。`udp:161,udp6:161` は WAN 側を含む全アドレスで待ち受ける |
 
 ベースライン RA の既定値は、RFC 4861（6.2.1 節）と RFC 8106 の既定値です。
 
@@ -208,8 +208,9 @@ SNMP_LISTEN=udp6:[2001:db8:ffff::a]:161    # このルータの管理用アド�
 ファイルは全体を置き換えるので、ルータで `snmpd` を他の用途にも使っている場合は、手作業で統合してください。
 
 community 文字列はパスワードに相当し、平文で送られます（SNMP v2c）。
-`setup.conf` を他人から読めないようにし（`chmod 600 setup.conf`）、`public` は使わず、
-SNMP は管理用ネットワークに限定してください。`--print-config` は community を表示しません。
+`setup.conf` を他人から読めないようにし（`chmod 600 setup.conf`）、SNMP は管理用ネットワークに限定してください。
+`setup.sh` は、12 文字未満の community と、`public` のようなよく知られた語を拒否します。
+`openssl rand -hex 12` で適した文字列を作れます。`--print-config` は community を表示しません。
 ルータでファイアウォールを使っている場合は、コントローラからの UDP 161 番を許可してください。
 `setup.sh` はファイアウォールの規則を変更しません。
 

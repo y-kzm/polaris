@@ -57,7 +57,9 @@ GRPC_ADDR=localhost:50051         # where gorad listens for the controller, e.g.
 # that setup did not write is kept as snmpd.conf.bak-<date>. Empty: snmpd is
 # not touched. Letters, digits and . _ @ % + = - are allowed in the community.
 # The community string works like a password: keep setup.conf private
-# (chmod 600 setup.conf) and do not use "public".
+# (chmod 600 setup.conf). It needs at least 12 characters and must not be a
+# well-known word such as "public"; for example: openssl rand -hex 12
 SNMP_COMMUNITY=                   # the community the controller uses for this router (param.yaml, snmp_targets)
 SNMP_ALLOW_FROM=                  # address(es) or prefix(es) of the controller, comma-separated; required with SNMP_COMMUNITY
-SNMP_LISTEN=udp:161,udp6:161      # agentAddress of snmpd; e.g. udp6:[2001:db8:ffff::a]:161 for the management address only
+SNMP_LISTEN=                      # agentAddress of snmpd; required with SNMP_COMMUNITY. This router's management
+                                  # address, e.g. udp6:[2001:db8:ffff::a]:161 (udp:161,udp6:161 = every address, WAN included)
