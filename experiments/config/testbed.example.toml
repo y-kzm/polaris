@@ -40,7 +40,8 @@ kind = "real"                        # "emulated" if your testbed has its own IS
 [upstream.urls]                      # fetched with curl -6 by the forwarding experiment
 default = "https://ifconfig.co/ip"   # must answer with the client address
 # d1 = "https://teams.microsoft.com/"  # must resolve to addresses inside policy.d1;
-                                       # it is checked by packet counts only
+                                       # it is checked by packet counts only.
+                                       # A list gives one URL per prefix of policy.d1.
 
 [[router]]
 ssh = "user@router-a.example"

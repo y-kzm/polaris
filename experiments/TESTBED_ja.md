@@ -87,7 +87,7 @@ cp config/testbed.example.toml config/testbed.toml
 | `router.fail_cmd`、`router.restore_cmd` | そのルータの上流を切る・戻す方法（既定: `ip link set <wan_if> down` / `up`）。スイッチのポートや別の機器を操作したい場合に使います |
 | `upstream.kind` | 実 ISP なら `real`。testbed 内に ISP とサーバの模擬があるなら `emulated` |
 | `upstream.urls.default` | 実 ISP の場合: `curl -6` で取得する URL。クライアントのアドレスを返すもの（例: `https://ifconfig.co/ip`）。ホストがどの ISP から出たかの判定に使います |
-| `upstream.urls.d1` | 任意。アドレスが `policy.d1` の中にある URL。パケット数だけで判定します |
+| `upstream.urls.d1` | 任意。アドレスが `policy.d1` の中にある URL。1 つ、または D1 のプレフィクスごとに 1 つずつ並べたリスト。パケット数だけで判定します |
 | `policy.default_dst` | D1 の**外**で、ping に応答するアドレス。障害実験と transition 実験が連続して ping します |
 | `policy.d1_dst` | D1 の**中**で、ping に応答するアドレス。transition 実験に必要です。既定値（先頭プレフィクスの先頭アドレス）は、インターネット上では応答しません |
 | `experiments.failover.testbed_confirmed` | 5 節が済むまで `false` のまま |

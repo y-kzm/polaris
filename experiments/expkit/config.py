@@ -66,7 +66,7 @@ class Config:
     d1_dst: str  # an address inside D1 that answers ping; "" = the first address of the first prefix
     ra: RaParams
     upstream: str  # "emulated" or "real"
-    urls: dict[str, str]  # real upstream: {"default": url, "d1": url}
+    urls: dict[str, Any]  # real upstream: {"default": url, "d1": url or one url per D1 prefix}
     routers: tuple[RouterCfg, ...]
     controller_ssh: str = ""
     emulator_ssh: str = ""
