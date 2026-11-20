@@ -143,6 +143,9 @@ sudo ./setup.sh
 ```
 
 `setup.sh` reads `./setup.conf` if it exists (`-c FILE` names another file).
+Because the settings decide what root does, the file must belong to root or to
+the user who calls `sudo`, and must not be writable by group or others
+(`chmod go-w setup.conf`); otherwise `setup.sh` refuses it.
 The file holds one `KEY=VALUE` per line. An environment variable of the same
 name overrides the file, so a single value can still be set on the command
 line: `sudo RA_INTERVAL_MS=400000 ./setup.sh`.
@@ -164,7 +167,7 @@ line: `sudo RA_INTERVAL_MS=400000 ./setup.sh`.
 | `POLICY_LL` | (empty) | Source address of the policy RAs (see above). Needs `LAN_IF` |
 | `OVERWRITE_CONFIG` | `no` | `yes`: write `config.yaml` again; the previous file is kept as `config.yaml.bak-<date>` |
 | `INSTALL_DIR` | `/opt/go-ra-server` | Installation directory |
-| `GO` | (searched) | Path of the Go compiler. `sudo` does not keep your `PATH`, so `setup.sh` also looks in `/usr/local/go/bin` and in the Go directories of the invoking user; set `GO` if it is elsewhere |
+| `GO` | (searched) | Path of the Go compiler. `sudo` does not keep your `PATH`, so `setup.sh` also looks in `/usr/local/go/bin` and in the Go directories of the invoking user; set `GO` if it is elsewhere. The build runs as the user who called `sudo`, not as root |
 | `GRPC_ADDR` | `localhost:50051` | gRPC listen address for gorad |
 
 **3. The RA configuration**

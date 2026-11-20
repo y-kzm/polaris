@@ -42,6 +42,31 @@ if [[ -z "$CONF_FILE" && -f "$SCRIPT_DIR/setup.conf" ]]; then
   CONF_FILE="$SCRIPT_DIR/setup.conf"
 fi
 
+# The settings decide what root does (among others, which Go binary it runs),
+# so a file that someone else could have written is refused: it must belong
+# to root or to the user who called sudo, and must not be writable by group
+# or others.
+trust_problem() {
+  local path="$1" owner mode
+  if owner=$(stat -c '%u' "$path" 2>/dev/null) && mode=$(stat -c '%a' "$path" 2>/dev/null); then
+    :                                             # GNU stat
+  else
+    owner=$(stat -f '%u' "$path"); mode=$(stat -f '%Lp' "$path")   # BSD stat
+  fi
+  if [[ "$owner" != 0 && "$owner" != "${SUDO_UID:-$(id -u)}" ]]; then
+    echo "belongs to uid $owner, not to root or to you"
+  elif (( (8#$mode & 8#022) != 0 )); then
+    echo "is writable by group or others (mode $mode); run: chmod go-w $path"
+  fi
+}
+check_trusted() {
+  local problem
+  problem=$(trust_problem "$1")
+  if [[ -n "$problem" ]]; then
+    echo "Error: the $2 $1 $problem." >&2; exit 1
+  fi
+}
+
 # Read KEY=VALUE lines. The file is parsed, not executed: it is read as root.
 # A value may be quoted; text after " #" is a comment. A variable that is
 # set in the environment keeps its value.
@@ -50,6 +75,7 @@ load_conf() {
   local re_dq='^"([^"]*)"[[:space:]]*(#.*)?$'
   local re_sq="^'([^']*)'[[:space:]]*(#.*)?\$"
   [[ -f "$file" ]] || { echo "Error: settings file not found: $file" >&2; exit 1; }
+  check_trusted "$file" "settings file"
   while IFS= read -r line || [[ -n "$line" ]]; do
     n=$((n + 1))
     line="${line%$'\r'}"
@@ -123,11 +149,14 @@ OVERWRITE_CONFIG="${OVERWRITE_CONFIG:-no}"     # yes: replace an existing config
 # The Go compiler. sudo replaces PATH (secure_path), so a Go installation in
 # /usr/local/go or in the home directory of the invoking user is not found
 # through PATH; the usual places are searched. Set GO to name it explicitly.
+# The build itself runs as the user who called sudo, not as root (see below),
+# and a compiler that someone else could have replaced is not used.
 GO="${GO:-}"
 find_go() {
   local candidate home=""
   if [[ -n "$GO" ]]; then
-    [[ -x "$GO" ]] || { echo "Error: GO=$GO is not an executable file." >&2; exit 1; }
+    [[ -f "$GO" && -x "$GO" ]] || { echo "Error: GO=$GO is not an executable file." >&2; exit 1; }
+    check_trusted "$GO" "Go compiler"
     return
   fi
   if [[ -n "${SUDO_USER:-}" ]]; then
@@ -135,7 +164,7 @@ find_go() {
   fi
   for candidate in "$(command -v go || true)" /usr/local/go/bin/go /usr/lib/go/bin/go /snap/bin/go \
                    ${home:+"$home/go/bin/go" "$home/.local/go/bin/go" "$home/sdk/go/bin/go"}; do
-    if [[ -n "$candidate" && -x "$candidate" ]]; then
+    if [[ -n "$candidate" && -f "$candidate" && -x "$candidate" && -z "$(trust_problem "$candidate")" ]]; then
       GO="$candidate"
       return
     fi
@@ -353,7 +382,23 @@ if [[ ! -d "$GORA_SRC" ]]; then
   exit 1
 fi
 
-(cd "$GORA_SRC" && "$GO" build -o gorad ./cmd/gorad)
+# Build as the user who called sudo: the compiler, which may live in that
+# user's home directory, then never runs as root, and the checkout and the Go
+# caches keep their owner. Only a direct root login builds as root.
+BUILD_USER="${SUDO_USER:-root}"
+if [[ "$BUILD_USER" != root ]] && command -v runuser > /dev/null; then
+  BUILD_HOME=$(getent passwd "$BUILD_USER" | cut -d: -f6)
+  runuser -u "$BUILD_USER" -- env HOME="$BUILD_HOME" PATH="$(dirname "$GO"):/usr/local/bin:/usr/bin:/bin" \
+    sh -c 'cd "$1" && "$2" build -o gorad ./cmd/gorad' sh "$GORA_SRC" "$GO"
+  echo "Built as user $BUILD_USER."
+else
+  if [[ "$(stat -c '%u' "$GO")" != 0 ]]; then
+    echo "Error: refusing to run $GO as root: it does not belong to root." >&2
+    echo "  Run setup with sudo from your own account, so that the build runs as you." >&2
+    exit 1
+  fi
+  (cd "$GORA_SRC" && "$GO" build -o gorad ./cmd/gorad)
+fi
 echo "Built: $GORA_SRC/gorad"
 echo
 
