@@ -31,117 +31,122 @@ IPv6 ルータ広告デーモン [go-ra (fork版)](https://github.com/y-kzm/go-r
 
 ### 主要な概念
 
-- **Router（ルータ）**: go-ra エージェントが動作するネットワーク機器。RA パラメータを設定する。
-- **Rule（ルール）**: 特定のネクストホップルータに対して広告すべき IPv6 プレフィックス / FQDN のセットを定義する。
-- **Group（グループ）**: クライアントホストの名前付きセット。グループにルールを紐付けることで、どのクライアントがどのルートを受け取るかを制御する。
-- **Neighbor（ネイバー）**: ネットワーク上で発見された IPv6 ホスト。グループメンバーシップの情報源となる。
+- **Router**: go-ra agent が動くサイト出口ルータと、その RA パラメータ。*inactive* にしたルータはポリシーから外れ、次の適用でポリシー RA が取り下げられます。
+- **Rule**: 宛先プレフィクスと、その経由ルータ。プレフィクスは IPv6 プレフィクスの直接指定か、適用のたびに解決する*サービス*で指定します。
+- **Group**: ホスト（リンクローカルアドレスで識別）の集合と、それに適用するルール。
+- **Neighbor**: サイトのリンク上で見つかったホスト。グループのメンバーを選ぶための一覧です。グループが保存するのはアドレスで、近隣への参照ではありません。
+- **下書き・Plan・Apply**: 編集はデータベース（下書き）だけを変更します。**Plan** は、適用すると何が変わるかを、backend がルータの実際の状態から計算して示します。**Apply** はルータを下書きの状態にします（新しい RA が先、取り下げが後）。適用済みのポリシーは定期的に再適用され、再起動したルータにも戻ります。
 
-## REST API 概要
-
-`/api` 配下にマウントされています:
-
-| メソッド | パス | 説明 |
-|--------|------|------|
-| GET    | `/routers` | 登録済みルータ一覧 |
-| POST   | `/routers` | ルータの登録（`gora` 自己登録時にも使用）|
-| GET    | `/routers/status` | 全ルータの到達性 + TX カウンタ（並列 gRPC `GetStatus`）|
-| GET    | `/routers/{id}/status` | 単一ルータの到達性 |
-| GET    | `/routers/{id}/interfaces` | 単一ルータで動作中の `InterfaceConfig` 一覧（gRPC `ListInterfaces`）|
-| PUT    | `/routers/{id}` | ルータ設定の更新 |
-| DELETE | `/routers/{id}` | ルータの削除 |
-| GET    | `/rules` | ルール一覧 |
-| POST   | `/rules` | ルール作成（`{nexthop, entries: [{value: <prefix>}]}`）|
-| DELETE | `/rules/{id}` | ルール削除 |
-| GET    | `/groups` | グループ一覧 |
-| POST   | `/groups` | グループ作成（`{name, members: [<link-local>...]}`）|
-| PUT    | `/groups/{id}/rules` | ルール割り当ての置換（`{rules: [<id>...]}`）|
-| DELETE | `/groups/{id}` | グループ削除 |
-| GET    | `/neighbors` | 検出されたネイバー一覧 |
-| POST   | `/neighbors/refresh` | 全 collector の即時ポーリングを強制 |
-| GET    | `/neighbor-sources` | 設定済み collector のソースラベル一覧 |
-| POST   | `/policy/apply` | ルール×グループをコンパイルし、全ルータを 2 段階（新しい広告 → 古い広告の取り下げ）で更新する。`?dry_run=1` は差分の報告のみ |
-| GET    | `/fqdn/services` | endpoint-collector のサービス一覧（FQDN ベースのルール用）|
-| GET    | `/fqdn/services/{name}/endpoints` | サービス名から IP プレフィクスを解決 |
+部品の境界、部品間の HTTP の契約、ポリシーのライフサイクル、起動方法の設計は
+[`../docs/design_ja.md`](../docs/design_ja.md) にあります。
 
 ## クイックスタート
 
+Docker を使う場合（他に必要なものはありません）:
+
 ```bash
-# 全コンポーネントを起動（バックエンド + 有効なモジュール + フロントエンド開発サーバ）
-./server.sh
+docker compose up -d          # Web UI と API: http://<このホスト>:8080
+docker compose logs -f        # 全コンポーネントのログ（ラベル付き）
+docker compose down           # 停止（-v を付けるとデータベースも削除）
 ```
 
-フロントエンドの開発サーバはデフォルトで `http://localhost:5173` で起動します。
+Docker を使わない場合（Go、初回ビルド用の Node.js、Python 3 と PyYAML が必要）:
+
+```bash
+./server.sh                   # 足りないものをビルドして、すべて起動する
+./server.sh dev               # 上に加えて、frontend 開発用の Vite 開発サーバも起動する
+./server.sh build             # ビルドだけ行う
+```
+
+どちらも、`param.yaml` で有効にした module と backend を起動します。backend は Web UI と
+API を 1 つのポートで提供します。コンテナはホストのネットワークを使います（Linux）。
+backend が IPv6 でルータの agent に届くようにするためです。
 
 ## 設定
 
-すべての設定は `param.yaml` で管理します：
+編集するのは `param.yaml` だけです。変更後は `docker compose restart`
+（または `server.sh` の再起動）で反映します。
 
 ```yaml
 backend:
-  port: 8080
-  db_path: controller.db
-  fetch_interval: 10        # ネイバーポーリング間隔（秒）
-  neighbor_ifname: ""       # インタフェース名でフィルタ（空 = 全インタフェース）
+  port: 8080                  # Web UI と API
+  listen_host: ""             # "" = 全インターフェース
+  data_dir: ./data            # データベースと module のキャッシュ
+  fetch_interval: 10          # neighbor source から取得する間隔（秒）
+  reconcile_interval: 60      # 適用済みポリシーを再適用する間隔（秒）。0 = 無効
+  cors_origins: []            # API を呼べる別オリジン
 
-modules:
-  neighbor_collector_static:
-    enabled: true
-    port: 8083
-    neighbors: []           # 静的ネイバーのリスト
-
-  neighbor_collector_snmp:
-    enabled: true
+modules:                      # それぞれ別プロセスで、backend が HTTP で問い合わせる
+  neighbor_collector_snmp:    # ルータの近隣キャッシュからホストを取得（SNMP）
+    enabled: false
     port: 8084
     poll_interval: 30
-    snmp_targets:               # ルータ1台につき1エントリ; port/community は省略可
-      - host: "router1.example.com"
-        port: 161
+    stale_polls: 3            # この回数連続で失敗したルータのホストを落とす
+    snmp_targets:
+      - host: "router-a.example.com"
         community: "public"
-      - host: "router2.example.com"
-        port: 161
-        community: "private"
-
-  endpoint_collector_static:
+        ifname: "eth1"        # このインターフェース（サイトのリンク）の近隣だけ
+        self_ll: "fe80::1"    # そのリンク上のルータ自身のアドレス
+  neighbor_collector_static:  # 固定のホスト一覧
+    enabled: true
+    port: 8083
+    neighbors: []
+  endpoint_collector_ms365:   # Microsoft 365 のサービスのプレフィクス
+    enabled: false
+    port: 8085
+    instance: Worldwide       # Worldwide | China | USGovDoD | USGovGCCHigh
+    refresh_interval: 3600
+  endpoint_collector_static:  # 固定のサービス一覧
     enabled: true
     port: 8082
-    services: []            # 静的サービスのリスト
-
-  endpoint_collector_ms365:
-    enabled: true
-    port: 8085
-    db_path: ./m365_endpoints.db
-    instance: Worldwide     # Worldwide | China | USGovDoD | USGovGCCHigh
+    services: []
 ```
+
+module は、`listen_host` を指定しない限り `127.0.0.1` で待ち受けます。backend には認証が
+ありません。ポートには管理ネットワークからだけ到達できるようにしてください
+（設計文書の「セキュリティ上の前提」を参照）。
+
+## REST API 概要
+
+`/api` の下にあります。エラーは `{"error": "<メッセージ>"}` と 4xx / 5xx のステータスで返ります。
+
+| メソッド | パス | 説明 |
+|----------|------|------|
+| GET    | `/health` | 生存確認 |
+| GET    | `/routers` | 登録済みルータの一覧 |
+| POST   | `/routers` | ルータを登録 |
+| PUT    | `/routers/{id}` | ルータを編集（状態 `active` / `inactive` も） |
+| DELETE | `/routers/{id}` | 撤去: ルータのポリシー RA を取り下げてから削除する。ルールが使用中、または到達できない場合は `409`（`?force=1` で強制削除） |
+| GET    | `/routers/status`、`/routers/{id}/status` | 到達性と送信カウンタ（gRPC `GetStatus`） |
+| GET    | `/routers/{id}/interfaces` | ルータで動いている RA 設定（gRPC `ListInterfaces`） |
+| GET、POST | `/rules` | 一覧、作成（`{nexthop, entries: [{type: "ipv6", value: <prefix>} \| {type: "service", value: <name>}]}`） |
+| PUT、DELETE | `/rules/{id}` | 編集、削除（全グループからも外れる） |
+| GET、POST | `/groups` | 一覧、作成（`{name, members: [<link-local>...], rules: [<id>...]}`） |
+| PUT    | `/groups/{id}`、`/groups/{id}/rules` | グループ全体の置き換え、ルールだけの置き換え |
+| DELETE | `/groups/{id}` | グループを削除 |
+| GET    | `/neighbors` | neighbor source が見つけたホスト |
+| POST   | `/neighbors/refresh` | 全情報源に即時更新を要求 |
+| GET    | `/fqdn/services`、`/fqdn/services/{name}/endpoints` | endpoint source のサービスとそのプレフィクス |
+| GET    | `/sources` | neighbor / endpoint の各情報源の状態 |
+| GET    | `/policy/plan` | 適用すると何が起きるか: ルータごとの制御要求メッセージと変更、警告、`pending` |
+| POST   | `/policy/apply` | コンパイル（Algorithm 1）し、全ルータを 2 段階で反映（新しい広告 → 古い広告の取り下げ）。`?dry_run=1` は変更の報告のみ |
 
 #### プロジェクト構成
 
 ```
-frontend/src/
-  types.ts                    共有 TypeScript インターフェース
-  utils/
-    api.ts                    getApiUrl() — VITE_API_URL からバックエンド URL を解決
-    format.ts                 formatDateTime() / neighborLedStatus() ヘルパー
-    yaml.ts                   ポリシー YAML 生成と LCS ベースの差分計算
-  providers/
-    neighbor-rest.ts          /api/neighbors 用 REST クライアント
-    service-rest.ts           /api/fqdn/services 用 REST クライアント
-  components/
-    RouterGrid.tsx            ルーターステータスカード（インターフェース名がクリック可能）
-    NeighborsTab.tsx          Clients タブ（ページネーション付きネイバーテーブル、source router を表示）
-    RulesTab.tsx              RA Policy タブ
-    GroupsTab.tsx             Policy Groups タブ
-    StatusLed.tsx             接続状態インジケータ
-    NotificationStack.tsx     トースト通知オーバーレイ
-    modals/
-      ConfirmModal.tsx        汎用確認ダイアログ
-      FqdnModal.tsx           FQDN サービス選択モーダル
-      NeighborModal.tsx       Shift クリック範囲選択付きネイバー選択モーダル
-      RouterConfigModal.tsx   ルーター追加・編集・削除フォームモーダル
-      RAInterfaceModal.tsx    動作中の RA InterfaceConfig 表示（PIO/RIO/Clients/DRP）
-      YamlPreviewModal.tsx    ポリシー YAML・radvd 設定プレビューモーダル
-      YamlDiffModal.tsx       最後に適用したポリシーとの差分表示モーダル
-  App.tsx                     状態管理、API 呼び出し、レイアウト
-  main.tsx                    アプリケーションのエントリーポイント
+server.sh                     param.yaml からすべてを起動する
+param.yaml                    設定
+Dockerfile, docker-compose.yaml
+backend/
+  cmd/server/                 エントリポイント（環境変数で設定）
+  internal/api/               REST API、検証、plan / apply / 定期再適用
+  internal/engine/            Algorithm 1（compile.go）、差分（reconcile.go）、2 段階適用（engine.go）
+  internal/store/             SQLite: ルータ、ルール、グループ、適用済みポリシー、サービスのキャッシュ
+  internal/neighbor/          neighbor source のクライアント
+  internal/fqdn/              endpoint source のクライアント
+  internal/gora/              agent の gRPC クライアント
+frontend/src/                 Web UI。API を表示するだけで、ポリシーのロジックは持たない
+modules/                      neighbor / endpoint の情報源（それぞれ 1 プロセス）
 ```
 
 ## ネイバーリフレッシュ
@@ -162,8 +167,10 @@ SNMP フラッディングを防ぐため、リフレッシュ後 10 秒間は�
 ### 前提条件
 
 - systemd を使用する Linux
-- Go（初回起動時のバイナリビルドに必要）
-- Python 3 + PyYAML（`pip3 install pyyaml`）
+- Go と Node.js。最初に 1 回ビルドするために使います（`./server.sh build`。インストール先に書き込めるユーザーで実行）。サービス自体の実行には不要です
+- Python 3 + PyYAML（`apt install python3-yaml`）
+
+Docker を使う場合はどれも不要です。[クイックスタート](#クイックスタート)を参照してください。
 
 ### インストール手順
 

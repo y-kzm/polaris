@@ -364,7 +364,7 @@ func configContent(cfg *gorav1.InterfaceConfig) *content {
 		if r.LifetimeSeconds == 0 {
 			continue
 		}
-		p, err := parsePrefix(r.Prefix)
+		p, err := ParsePrefix(r.Prefix)
 		if err != nil {
 			p = r.Prefix
 		}

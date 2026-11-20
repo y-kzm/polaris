@@ -30,117 +30,121 @@ Configure routers, define routing rules, organise hosts into groups, and push th
 
 ### Key concepts
 
-- **Router**: A network device running a go-ra agent.  RA parameters are configured per router.
-- **Rule**: A set of IPv6 prefixes / FQDNs to advertise via a specific nexthop router.
-- **Group**: A named set of client hosts.  Groups are linked to rules to control which clients receive which routes.
-- **Neighbor**: A discovered IPv6 host on the network.  Neighbors are the source of truth for group membership.
+- **Router**: A site-exit router running a go-ra agent, with its RA parameters. An *inactive* router is left out of the policy: its policy RAs are withdrawn at the next apply.
+- **Rule**: Destination prefixes — literal IPv6 prefixes, or a *service* whose prefixes are looked up at every apply — and the router they go through.
+- **Group**: A named set of hosts, identified by their link-local addresses, and the rules that apply to them.
+- **Neighbor**: A host discovered on the site link. Neighbors are a pick list for group members; a group stores addresses, not references.
+- **Draft, plan, apply**: Editing changes only the database (the draft). **Plan** shows, computed by the backend from the routers' real state, what an apply would change. **Apply** brings the routers to the draft: new RAs first, withdrawals after. The applied policy is re-applied periodically, which restores a router after a restart.
 
-## REST API summary
-
-Mounted under `/api`:
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET    | `/routers` | List registered routers |
-| POST   | `/routers` | Register a router (also used by `gora` self-registration) |
-| GET    | `/routers/status` | Reachability + TX counters for all routers (parallel gRPC `GetStatus`) |
-| GET    | `/routers/{id}/status` | Reachability for one router |
-| GET    | `/routers/{id}/interfaces` | Live `InterfaceConfig` list for one router (gRPC `ListInterfaces`) |
-| PUT    | `/routers/{id}` | Update router settings |
-| DELETE | `/routers/{id}` | Delete a router |
-| GET    | `/rules` | List rules |
-| POST   | `/rules` | Create a rule (`{nexthop, entries: [{value: <prefix>}]}`) |
-| DELETE | `/rules/{id}` | Delete a rule |
-| GET    | `/groups` | List groups |
-| POST   | `/groups` | Create a group (`{name, members: [<link-local>...]}`) |
-| PUT    | `/groups/{id}/rules` | Replace rule assignments (`{rules: [<id>...]}`) |
-| DELETE | `/groups/{id}` | Delete a group |
-| GET    | `/neighbors` | List discovered neighbors |
-| POST   | `/neighbors/refresh` | Force an immediate poll of all collectors |
-| GET    | `/neighbor-sources` | List configured collector source labels |
-| POST   | `/policy/apply` | Compile rules×groups, then reconcile every router in two phases (advertise new, withdraw old). `?dry_run=1` only reports the changes |
-| GET    | `/fqdn/services` | List endpoint-collector services (FQDN-based rules) |
-| GET    | `/fqdn/services/{name}/endpoints` | Resolve a service to IP prefixes |
+The design — component boundaries, the HTTP contracts between them, the policy lifecycle and the start-up — is in [`../docs/design.md`](../docs/design.md).
 
 ## Quick start
 
+With Docker (nothing else to install):
+
 ```bash
-# Start everything (backend + all enabled modules + frontend dev server)
-./server.sh
+docker compose up -d          # web UI and API: http://<this host>:8080
+docker compose logs -f        # every component, labelled
+docker compose down           # stop (add -v to delete the database)
 ```
 
-The frontend dev server opens at `http://localhost:5173` by default.
+Without Docker (needs Go, Node.js for the first build, and Python 3 with PyYAML):
+
+```bash
+./server.sh                   # builds what is missing, then starts everything
+./server.sh dev               # the same, plus the Vite development server for frontend work
+./server.sh build             # build only
+```
+
+Both start the modules enabled in `param.yaml` and the backend, which serves the
+web UI and the API on one port. The container uses the host's network (Linux), so
+that the backend reaches the routers' agents over IPv6.
 
 ## Configuration
 
-All settings live in `param.yaml`:
+`param.yaml` is the only file to edit; after a change, `docker compose restart`
+(or restart `server.sh`).
 
 ```yaml
 backend:
-  port: 8080
-  db_path: controller.db
-  fetch_interval: 10        # seconds between neighbor polls
-  neighbor_ifname: ""       # filter neighbors by interface name (empty = all)
+  port: 8080                  # web UI and API
+  listen_host: ""             # "" = every interface
+  data_dir: ./data            # database and module caches
+  fetch_interval: 10          # seconds between fetches from the neighbor sources
+  reconcile_interval: 60      # seconds between re-applies of the applied policy; 0 = off
+  cors_origins: []            # other origins allowed to call the API
 
-modules:
-  neighbor_collector_static:
-    enabled: true
-    port: 8083
-    neighbors: []           # list of static neighbor entries
-
-  neighbor_collector_snmp:
-    enabled: true
+modules:                      # each is a separate process the backend queries over HTTP
+  neighbor_collector_snmp:    # hosts, from the routers' neighbor caches (SNMP)
+    enabled: false
     port: 8084
     poll_interval: 30
-    snmp_targets:             # one entry per router; port/community are optional
-      - host: "router1.example.com"
-        port: 161
+    stale_polls: 3            # a router that fails this many polls loses its hosts
+    snmp_targets:
+      - host: "router-a.example.com"
         community: "public"
-      - host: "router2.example.com"
-        port: 161
-        community: "private"
-
-  endpoint_collector_static:
+        ifname: "eth1"        # only neighbors on this interface (the site link)
+        self_ll: "fe80::1"    # the router's own address on that link
+  neighbor_collector_static:  # a fixed list of hosts
+    enabled: true
+    port: 8083
+    neighbors: []
+  endpoint_collector_ms365:   # prefixes of Microsoft 365 services
+    enabled: false
+    port: 8085
+    instance: Worldwide       # Worldwide | China | USGovDoD | USGovGCCHigh
+    refresh_interval: 3600
+  endpoint_collector_static:  # a fixed list of services
     enabled: true
     port: 8082
-    services: []            # list of static service entries
-
-  endpoint_collector_ms365:
-    enabled: true
-    port: 8085
-    db_path: ./m365_endpoints.db
-    instance: Worldwide     # Worldwide | China | USGovDoD | USGovGCCHigh
+    services: []
 ```
+
+Modules listen on `127.0.0.1` unless `listen_host` is set for them. The backend
+has no authentication: make its port reachable from the management network only
+(see the security assumptions in the design document).
+
+## REST API summary
+
+Mounted under `/api`. Errors are `{"error": "<message>"}` with a 4xx or 5xx status.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET    | `/health` | Liveness |
+| GET    | `/routers` | List registered routers |
+| POST   | `/routers` | Register a router |
+| PUT    | `/routers/{id}` | Edit a router (also its status: `active` / `inactive`) |
+| DELETE | `/routers/{id}` | Decommission: withdraw the router's policy RAs, then remove it. `409` while a rule uses it or if it cannot be reached (`?force=1` removes it anyway) |
+| GET    | `/routers/status`, `/routers/{id}/status` | Reachability and TX counters (gRPC `GetStatus`) |
+| GET    | `/routers/{id}/interfaces` | The RA configurations a router is running (gRPC `ListInterfaces`) |
+| GET, POST | `/rules` | List, create (`{nexthop, entries: [{type: "ipv6", value: <prefix>} \| {type: "service", value: <name>}]}`) |
+| PUT, DELETE | `/rules/{id}` | Edit; delete (also removes the rule from every group) |
+| GET, POST | `/groups` | List, create (`{name, members: [<link-local>...], rules: [<id>...]}`) |
+| PUT    | `/groups/{id}`, `/groups/{id}/rules` | Replace a group; replace only its rules |
+| DELETE | `/groups/{id}` | Delete a group |
+| GET    | `/neighbors` | Hosts seen by the neighbor sources |
+| POST   | `/neighbors/refresh` | Ask every source to refresh now |
+| GET    | `/fqdn/services`, `/fqdn/services/{name}/endpoints` | Services of the endpoint sources and their prefixes |
+| GET    | `/sources` | Health of every neighbor and endpoint source |
+| GET    | `/policy/plan` | What an apply would do: per router, the control request messages and the changes; warnings; `pending` |
+| POST   | `/policy/apply` | Compile (Algorithm 1) and reconcile every router in two phases (advertise new, withdraw old). `?dry_run=1` only reports the changes |
 
 #### Project structure
 
 ```
-frontend/src/
-  types.ts                    Shared TypeScript interfaces
-  utils/
-    api.ts                    getApiUrl() — resolves backend URL from VITE_API_URL
-    format.ts                 formatDateTime() and neighborLedStatus() helpers
-    yaml.ts                   Policy YAML generation and LCS-based diff
-  providers/
-    neighbor-rest.ts          REST client for /api/neighbors
-    service-rest.ts           REST client for /api/fqdn/services
-  components/
-    RouterGrid.tsx            Router status cards (interface names are clickable)
-    NeighborsTab.tsx          Clients tab (paginated neighbor table; shows source router)
-    RulesTab.tsx              RA Policy tab
-    GroupsTab.tsx             Policy Groups tab
-    StatusLed.tsx             Reachability indicator
-    NotificationStack.tsx     Toast notification overlay
-    modals/
-      ConfirmModal.tsx        Generic confirmation dialog
-      FqdnModal.tsx           FQDN service picker
-      NeighborModal.tsx       Neighbor picker with shift-select
-      RouterConfigModal.tsx   Router add/edit/remove form
-      RAInterfaceModal.tsx    Live RA InterfaceConfig viewer (PIO/RIO/Clients/DRP)
-      YamlPreviewModal.tsx    Policy YAML and radvd config preview
-      YamlDiffModal.tsx       Diff against last applied policy
-  App.tsx                     State, API calls, layout
-  main.tsx                    Entry point
+server.sh                     starts everything from param.yaml
+param.yaml                    the configuration
+Dockerfile, docker-compose.yaml
+backend/
+  cmd/server/                 entry point (configured by environment variables)
+  internal/api/               REST API, validation, plan / apply / periodic reconcile
+  internal/engine/            Algorithm 1 (compile.go), diff (reconcile.go), two-phase apply (engine.go)
+  internal/store/             SQLite: routers, rules, groups, applied policy, service cache
+  internal/neighbor/          client of the neighbor sources
+  internal/fqdn/              client of the endpoint sources
+  internal/gora/              gRPC client of the agents
+frontend/src/                 the web UI; it renders the API and holds no policy logic
+modules/                      neighbor and endpoint sources (one process each)
 ```
 
 ## Neighbor refresh
@@ -161,8 +165,10 @@ Background polling (`fetch_interval` / `poll_interval`) continues independently.
 ### Prerequisites
 
 - Linux with systemd
-- Go (for the initial binary build on first start)
-- Python 3 + PyYAML (`pip3 install pyyaml`)
+- Go and Node.js, to build once (`./server.sh build`, run as a user that may write to the installation directory); the service itself then needs neither
+- Python 3 + PyYAML (`apt install python3-yaml`)
+
+With Docker, none of this is needed: see [Quick start](#quick-start).
 
 ### Installation
 

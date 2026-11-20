@@ -35,6 +35,8 @@ type fakeAgent struct {
 	log     *opLog
 	configs map[int32]*gorav1.InterfaceConfig
 	failAdd bool
+	// failWithdraw makes every withdrawal RA fail.
+	failWithdraw bool
 }
 
 func newFakeAgent(name string, log *opLog) *fakeAgent {
@@ -77,6 +79,9 @@ func (a *fakeAgent) SendRA(_ context.Context, cfg *gorav1.InterfaceConfig, withd
 	phase := "make advertise"
 	if len(withdrawn) > 0 || cfg.Id == 0 {
 		phase = "break withdraw"
+		if a.failWithdraw {
+			return errors.New("link down")
+		}
 	}
 	a.log.add(a.name + " " + phase + " -> " + strings.Join(cfg.Clients, ","))
 	return nil
@@ -125,12 +130,12 @@ var (
 // router before the old one is withdrawn.
 func TestApplyMakesBeforeBreaking(t *testing.T) {
 	net := newFakeNet()
-	if res := Apply(context.Background(), net.dial, defaultViaA, oneGroup, testRouters, false); !res.Success {
+	if res := Apply(context.Background(), net.dial, defaultViaA, oneGroup, testRouters, Options{}); !res.Success {
 		t.Fatalf("first apply failed: %+v", res)
 	}
 	before := len(net.log.snapshot())
 
-	res := Apply(context.Background(), net.dial, defaultViaB, oneGroup, testRouters, false)
+	res := Apply(context.Background(), net.dial, defaultViaB, oneGroup, testRouters, Options{})
 	if !res.Success {
 		t.Fatalf("second apply failed: %+v", res)
 	}
@@ -147,7 +152,8 @@ func TestApplyMakesBeforeBreaking(t *testing.T) {
 	if lastMake == -1 || firstBreak == len(ops) || lastMake > firstBreak {
 		t.Fatalf("make must precede break: %v", ops)
 	}
-	want := []string{"b make add", "b make advertise -> fe80::1", "a break delete", "a break withdraw -> fe80::1"}
+	want := []string{"b make add", "b make advertise -> fe80::1",
+		"a break withdraw -> fe80::1", "a break delete", "a break withdraw -> fe80::1"}
 	if strings.Join(ops, "; ") != strings.Join(want, "; ") {
 		t.Errorf("ops = %v\nwant  %v", ops, want)
 	}
@@ -162,11 +168,11 @@ func TestApplyMakesBeforeBreaking(t *testing.T) {
 // If the new router cannot take the policy, the old router keeps it.
 func TestApplySkipsBreakWhenMakeFails(t *testing.T) {
 	net := newFakeNet()
-	Apply(context.Background(), net.dial, defaultViaA, oneGroup, testRouters, false)
+	Apply(context.Background(), net.dial, defaultViaA, oneGroup, testRouters, Options{})
 	before := len(net.log.snapshot())
 	net.agents["b"].failAdd = true
 
-	res := Apply(context.Background(), net.dial, defaultViaB, oneGroup, testRouters, false)
+	res := Apply(context.Background(), net.dial, defaultViaB, oneGroup, testRouters, Options{})
 
 	if res.Success {
 		t.Fatal("apply must report the failure")
@@ -189,11 +195,11 @@ func TestApplySkipsBreakWhenMakeFails(t *testing.T) {
 // its old router.
 func TestApplyWithUnreachableRouterKeepsOldPolicy(t *testing.T) {
 	net := newFakeNet()
-	Apply(context.Background(), net.dial, defaultViaA, oneGroup, testRouters, false)
+	Apply(context.Background(), net.dial, defaultViaA, oneGroup, testRouters, Options{})
 	before := len(net.log.snapshot())
 	net.down["b"] = true
 
-	res := Apply(context.Background(), net.dial, defaultViaB, oneGroup, testRouters, false)
+	res := Apply(context.Background(), net.dial, defaultViaB, oneGroup, testRouters, Options{})
 
 	if res.Success || res.Results[0].Success || res.Results[1].Success {
 		t.Fatalf("results = %+v", res.Results)
@@ -207,7 +213,7 @@ func TestApplyWithUnreachableRouterKeepsOldPolicy(t *testing.T) {
 
 	// Once the router is back, applying again completes the transition.
 	net.down["b"] = false
-	if res := Apply(context.Background(), net.dial, defaultViaB, oneGroup, testRouters, false); !res.Success {
+	if res := Apply(context.Background(), net.dial, defaultViaB, oneGroup, testRouters, Options{}); !res.Success {
 		t.Fatalf("retry failed: %+v", res)
 	}
 	if net.managed("a") != 0 || net.managed("b") != 1 {
@@ -218,7 +224,7 @@ func TestApplyWithUnreachableRouterKeepsOldPolicy(t *testing.T) {
 func TestApplyDryRunChangesNothing(t *testing.T) {
 	net := newFakeNet()
 
-	res := Apply(context.Background(), net.dial, defaultViaB, oneGroup, testRouters, true)
+	res := Apply(context.Background(), net.dial, defaultViaB, oneGroup, testRouters, Options{DryRun: true})
 
 	if !res.Success || !res.DryRun || res.Results[1].Added != 1 {
 		t.Fatalf("result = %+v", res)
@@ -231,14 +237,106 @@ func TestApplyDryRunChangesNothing(t *testing.T) {
 // Deleting every rule and applying again must clean the routers up.
 func TestApplyRemovesStalePolicy(t *testing.T) {
 	net := newFakeNet()
-	Apply(context.Background(), net.dial, defaultViaA, oneGroup, testRouters, false)
+	Apply(context.Background(), net.dial, defaultViaA, oneGroup, testRouters, Options{})
 
-	res := Apply(context.Background(), net.dial, nil, nil, testRouters, false)
+	res := Apply(context.Background(), net.dial, nil, nil, testRouters, Options{})
 
 	if !res.Success || net.managed("a") != 0 {
 		t.Fatalf("stale configuration left: %+v", res)
 	}
 	if _, ok := net.agents["a"].configs[0]; !ok {
 		t.Error("the baseline configuration was removed")
+	}
+}
+
+// An inactive router loses its policy state, and a rule that points to it is
+// not enforced.
+func TestApplyWithdrawsFromInactiveRouter(t *testing.T) {
+	net := newFakeNet()
+	Apply(context.Background(), net.dial, defaultViaA, oneGroup, testRouters, Options{})
+
+	inactiveA := routerA
+	inactiveA.Status = store.StatusInactive
+	res := Apply(context.Background(), net.dial, defaultViaA, oneGroup, []store.Router{inactiveA, routerB}, Options{})
+
+	if !res.Success || net.managed("a") != 0 {
+		t.Fatalf("policy state left on the inactive router: %+v", res)
+	}
+	if len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], "inactive") {
+		t.Errorf("warnings = %v", res.Warnings)
+	}
+}
+
+// A router that is down and marked inactive must not hold back the break
+// phase on the other routers.
+func TestApplyIgnoresUnreachableInactiveRouter(t *testing.T) {
+	net := newFakeNet()
+	Apply(context.Background(), net.dial, defaultViaB, oneGroup, testRouters, Options{})
+
+	net.down["a"] = true
+	inactiveA := routerA
+	inactiveA.Status = store.StatusInactive
+	res := Apply(context.Background(), net.dial, nil, nil, []store.Router{inactiveA, routerB}, Options{})
+
+	if !res.Success || net.managed("b") != 0 {
+		t.Fatalf("the break phase did not run on Router(b): %+v", res)
+	}
+	if res.Results[0].Reachable || res.Results[0].Note == "" || res.Results[0].Error != "" {
+		t.Errorf("result of the inactive router = %+v", res.Results[0])
+	}
+}
+
+func TestDecommission(t *testing.T) {
+	net := newFakeNet()
+	Apply(context.Background(), net.dial, defaultViaA, oneGroup, testRouters, Options{})
+
+	hosts, err := Decommission(context.Background(), net.dial, &routerA)
+	if err != nil || hosts != 1 || net.managed("a") != 0 {
+		t.Fatalf("hosts=%d managed=%d err=%v", hosts, net.managed("a"), err)
+	}
+	if _, ok := net.agents["a"].configs[0]; !ok {
+		t.Error("the baseline configuration was removed")
+	}
+
+	net.down["a"] = true
+	if _, err := Decommission(context.Background(), net.dial, &routerA); err == nil {
+		t.Error("decommissioning an unreachable router must fail")
+	}
+}
+
+func TestApplyReportsMessages(t *testing.T) {
+	net := newFakeNet()
+	res := Apply(context.Background(), net.dial, defaultViaA, oneGroup, testRouters, Options{DryRun: true, Messages: true})
+
+	msgs := res.Results[0].Messages
+	if len(msgs) != 1 || msgs[0].Preference != "high" || msgs[0].SourceAddress != "fe80::face:a" ||
+		msgs[0].RouterLifetimeSeconds != 1800 || len(msgs[0].Clients) != 1 {
+		t.Fatalf("messages = %+v", msgs)
+	}
+	if res.Changes() != 1 {
+		t.Errorf("changes = %d; want 1", res.Changes())
+	}
+}
+
+// A withdrawal that fails must stay computable: the configuration it is
+// derived from is kept, and the next apply sends the withdrawal again.
+func TestFailedWithdrawalIsRetried(t *testing.T) {
+	net := newFakeNet()
+	Apply(context.Background(), net.dial, defaultViaA, oneGroup, testRouters, Options{})
+
+	net.agents["a"].failWithdraw = true
+	res := Apply(context.Background(), net.dial, nil, nil, testRouters, Options{})
+	if res.Success || net.managed("a") != 1 {
+		t.Fatalf("after a failed withdrawal: success=%t, managed=%d; want a failure and the configuration kept",
+			res.Success, net.managed("a"))
+	}
+	if _, err := Decommission(context.Background(), net.dial, &routerA); err == nil || net.managed("a") != 1 {
+		t.Fatalf("decommission with a failing withdrawal: err=%v, managed=%d", err, net.managed("a"))
+	}
+
+	net.agents["a"].failWithdraw = false
+	res = Apply(context.Background(), net.dial, nil, nil, testRouters, Options{})
+	if !res.Success || net.managed("a") != 0 || res.Results[0].Withdrawn != 1 {
+		t.Fatalf("retry: %+v, managed=%d", res.Results[0], net.managed("a"))
 	}
 }

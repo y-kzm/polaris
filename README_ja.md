@@ -45,6 +45,7 @@ Polaris は **ISP 選択の起点を「送信元アドレス選択」から「�
 | [`controller/`](controller/) | RA Controller — Go バックエンド、React/Vite フロントエンド、Neighbor / Endpoint Collector モジュール |
 | [`laboratory/`](laboratory/) | 自己完結型 Docker Compose ラボ（ルータ 3 台、ホスト 10 台、コントローラ、Web サーバ）|
 | [`experiments/`](experiments/) | 実験環境（ルータ 2 台、ISP 2 つ、ホスト 200 台）を構築し、論文の実験を実施するスクリプト |
+| [`docs/design_ja.md`](docs/design_ja.md) | controller の設計: 部品の境界、契約、ポリシーのライフサイクル、起動 |
 
 各サブディレクトリには専用の README があります。ビルド・デプロイの詳細は
 そちらを参照してください。
@@ -69,12 +70,14 @@ cd polaris/laboratory
 
 ### 2. コントローラ単独実行（実機ルータでのテスト用）
 
-管理ホスト上で通常プロセスまたは systemd ユニットとしてコントローラを起動し、
-事前にデプロイ済みの `gora` エージェントと連携させます。
+管理ホスト上でコントローラを起動し、事前にデプロイ済みの `gora` エージェントと連携させます。
+`controller/param.yaml` を編集してから、次を実行します。
 
 ```bash
 cd controller
-./server.sh                 # 開発モード（frontend :5173 / backend :8080）
+docker compose up -d        # Web UI と API: http://<このホスト>:8080
+# Docker を使わない場合:
+./server.sh
 ```
 
 systemd デプロイ、パラメータファイル形式、モジュール設定については

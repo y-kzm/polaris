@@ -1,0 +1,14 @@
+# Build outputs and local state
+bin/
+data/
+**/node_modules/
+**/dist/
+**/*.db
+**/*.db-*
+# Module and backend binaries built by start.sh / make
+backend/ra-controller
+modules/*/neighbor-collector-*
+modules/*/endpoint-collector-*
+# Conflict copies made by file-sync tools ("name 2.go"); they break Go builds
+**/* [2-9].*
+**/* [2-9]

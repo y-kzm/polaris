@@ -62,14 +62,74 @@ func (s *RuleStore) Create(r *Rule) (int, error) {
 	return int(id), nil
 }
 
-func (s *RuleStore) Delete(id int) error {
-	res, err := s.db.Exec(`DELETE FROM rules WHERE id=?`, id)
+func (s *RuleStore) Update(r *Rule) error {
+	res, err := s.db.Exec(`UPDATE rules SET comment=?, entries=?, nexthop=?, updated_at=datetime('now') WHERE id=?`,
+		r.Comment, marshalJSON(r.Entries), r.Nexthop, r.ID)
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return fmt.Errorf("rule not found: %d", id)
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("rule not found: %d", r.ID)
 	}
 	return nil
+}
+
+// RenameNexthop points every rule at a router's new address.
+func (s *RuleStore) RenameNexthop(oldAddr, newAddr string) error {
+	_, err := s.db.Exec(`UPDATE rules SET nexthop=?, updated_at=datetime('now') WHERE nexthop=?`, newAddr, oldAddr)
+	return err
+}
+
+// Delete removes a rule and, in the same transaction, its ID from every
+// group, so that no group is left pointing at a rule that does not exist.
+func (s *RuleStore) Delete(id int) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(`DELETE FROM rules WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("rule not found: %d", id)
+	}
+
+	rows, err := tx.Query(`SELECT id, rules FROM groups`)
+	if err != nil {
+		return err
+	}
+	updates := map[int]string{}
+	for rows.Next() {
+		var groupID int
+		var rulesJSON string
+		if err := rows.Scan(&groupID, &rulesJSON); err != nil {
+			rows.Close()
+			return err
+		}
+		var ruleIDs []int
+		if err := json.Unmarshal([]byte(rulesJSON), &ruleIDs); err != nil {
+			continue
+		}
+		kept := make([]int, 0, len(ruleIDs))
+		for _, ruleID := range ruleIDs {
+			if ruleID != id {
+				kept = append(kept, ruleID)
+			}
+		}
+		if len(kept) != len(ruleIDs) {
+			updates[groupID] = marshalJSON(kept)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for groupID, rulesJSON := range updates {
+		if _, err := tx.Exec(`UPDATE groups SET rules=?, updated_at=datetime('now') WHERE id=?`, rulesJSON, groupID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }

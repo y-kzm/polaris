@@ -1,14 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/hex"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gosnmp/gosnmp"
@@ -22,6 +22,12 @@ const (
 	oidInetCidrRoute = "1.3.6.1.2.1.4.24.7"     // IP-MIB::inetCidrRouteTable (RFC 4292)
 )
 
+// InetAddressType values (RFC 4001) that carry an IPv6 address.
+const (
+	inetTypeIPv6  = 2 // 16 bytes
+	inetTypeIPv6z = 4 // 16 bytes + 4-byte zone index
+)
+
 // ipNetToPhysicalState enumeration values (RFC 4293).
 var neighborStates = map[int]string{
 	1: "REACHABLE",
@@ -33,206 +39,28 @@ var neighborStates = map[int]string{
 	7: "INCOMPLETE",
 }
 
-// Target represents a single SNMP-polled router.
-// JSON tags match the YAML keys in param.yaml (snmp_targets list).
-type Target struct {
-	Host      string `json:"host"`
-	Port      uint16 `json:"port"`
-	Community string `json:"community"`
-	// IfName restricts collection to the named internal-segment interface.
-	IfName string `json:"ifname,omitempty"`
-	// SelfLL is the router's own link-local on the internal interface.
-	// Neighbors matching any target's SelfLL are classified as is_router=1.
-	SelfLL string `json:"self_ll,omitempty"`
-	// Label is the human-readable name written into the neighbor source field.
-	// Falls back to Host when empty.
-	Label string `json:"label,omitempty"`
+// errNotIPv6 marks an index whose address is well-formed but not IPv6.
+var errNotIPv6 = errors.New("not an IPv6 address")
+
+// exportableState maps an ipNetToPhysicalState value to its name and
+// reports whether a neighbor in that state can receive an RA: its link-layer
+// address is resolved. INVALID, UNKNOWN, INCOMPLETE and values outside the
+// enumeration are not exported.
+func exportableState(state int) (string, bool) {
+	switch state {
+	case 1, 2, 3, 4:
+		return neighborStates[state], true
+	}
+	return "", false
 }
 
-type neighbor struct {
-	IP        string `json:"ip"`
-	LLAddr    string `json:"lladdr"`
-	IfIndex   int    `json:"ifindex"`
-	IfName    string `json:"ifname"`
-	State     string `json:"state"`
-	IsRouter  int    `json:"is_router"`
-	Source    string `json:"source"`     // hostname of the router that reported this entry
-	UpdatedAt string `json:"updated_at"`
-}
-
-// parseTargets parses the SNMP_TARGETS environment variable.
-//
-// Two formats are accepted:
-//
-//   - JSON array (primary, set by server.sh from param.yaml):
-//     [{"host":"r1","port":161,"community":"public"}, ...]
-//
-//   - Legacy CSV (fallback, for running start.sh directly):
-//     "host", "host:community", or "host:port:community" — comma-separated.
-//     Note: IPv6 addresses in this format must be specified as hostnames.
-func parseTargets(val string) []Target {
-	val = strings.TrimSpace(val)
-	if val == "" || val == "null" || val == "[]" {
-		return defaultTargets()
-	}
-
-	// Primary: JSON array produced by server.sh via module_config_json.
-	if strings.HasPrefix(val, "[") {
-		var targets []Target
-		if err := json.Unmarshal([]byte(val), &targets); err == nil {
-			var out []Target
-			for _, t := range targets {
-				if t.Host == "" {
-					continue
-				}
-				if t.Port == 0 {
-					t.Port = 161
-				}
-				if t.Community == "" {
-					t.Community = "public"
-				}
-				out = append(out, t)
-			}
-			if len(out) > 0 {
-				return out
-			}
-			return defaultTargets()
-		}
-	}
-
-	// Fallback: legacy CSV "host:port:community".
-	var out []Target
-	for _, s := range strings.Split(val, ",") {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			continue
-		}
-		t := Target{Port: 161, Community: "public"}
-		parts := strings.Split(s, ":")
-		switch len(parts) {
-		case 1:
-			t.Host = parts[0]
-		case 2:
-			t.Host = parts[0]
-			if p, err := strconv.ParseUint(parts[1], 10, 16); err == nil {
-				t.Port = uint16(p)
-			} else {
-				t.Community = parts[1]
-			}
-		default:
-			t.Host = parts[0]
-			if p, err := strconv.ParseUint(parts[1], 10, 16); err == nil {
-				t.Port = uint16(p)
-			}
-			t.Community = parts[2]
-		}
-		out = append(out, t)
-	}
-	if len(out) == 0 {
-		return defaultTargets()
-	}
-	return out
-}
-
-func defaultTargets() []Target {
-	return []Target{{Host: "localhost", Port: 161, Community: "public"}}
-}
-
-type collector struct {
-	targetsMu sync.RWMutex
-	targets   []Target
-	mu        sync.RWMutex
-	cached    []neighbor
-}
-
-func newCollector(targets []Target) *collector {
-	return &collector{targets: targets}
-}
-
-func (c *collector) run(interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for range ticker.C {
-		c.refresh()
-	}
-}
-
-// setTargetIface updates (or adds) the internal interface info for a target.
-func (c *collector) setTargetIface(host, ifname, selfLL, label string) {
-	c.targetsMu.Lock()
-	defer c.targetsMu.Unlock()
-	for i, t := range c.targets {
-		if t.Host == host {
-			c.targets[i].IfName = ifname
-			c.targets[i].SelfLL = selfLL
-			c.targets[i].Label = label
-			return
-		}
-	}
-	c.targets = append(c.targets, Target{Host: host, Port: 161, Community: "public", IfName: ifname, SelfLL: selfLL, Label: label})
-}
-
-func (c *collector) refresh() {
-	c.targetsMu.RLock()
-	targets := make([]Target, len(c.targets))
-	copy(targets, c.targets)
-	c.targetsMu.RUnlock()
-
-	// Build set of all routers' own link-locals so neighbors matching them
-	// are correctly promoted to is_router=1 regardless of routing table.
-	routerSelfLLs := make(map[string]struct{}, len(targets))
-	for _, t := range targets {
-		if t.SelfLL != "" {
-			routerSelfLLs[t.SelfLL] = struct{}{}
-		}
-	}
-
-	seen := map[string]neighbor{}
-	for _, t := range targets {
-		ns, err := collectFrom(t, routerSelfLLs)
-		if err != nil {
-			log.Printf("snmp %s: %v", t.Host, err)
-			continue
-		}
-		for _, n := range ns {
-			if prev, ok := seen[n.IP]; !ok || n.UpdatedAt > prev.UpdatedAt {
-				seen[n.IP] = n
-			}
-		}
-	}
-	merged := make([]neighbor, 0, len(seen))
-	for _, n := range seen {
-		merged = append(merged, n)
-	}
-	c.mu.Lock()
-	c.cached = merged
-	c.mu.Unlock()
-	log.Printf("snmp: refreshed %d neighbor(s) from %d target(s)", len(merged), len(c.targets))
-}
-
-func (c *collector) neighbors(ifname string) []neighbor {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if ifname == "" {
-		out := make([]neighbor, len(c.cached))
-		copy(out, c.cached)
-		return out
-	}
-	out := []neighbor{}
-	for _, n := range c.cached {
-		if n.IfName == ifname {
-			out = append(out, n)
-		}
-	}
-	return out
-}
-
-func connectSNMP(t Target) (*gosnmp.GoSNMP, error) {
+func connectSNMP(ctx context.Context, t Target) (*gosnmp.GoSNMP, error) {
 	g := &gosnmp.GoSNMP{
 		Target:         t.Host,
 		Port:           t.Port,
 		Community:      t.Community,
 		Version:        gosnmp.Version2c,
+		Context:        ctx,
 		Timeout:        5 * time.Second,
 		Retries:        2,
 		MaxOids:        60,
@@ -244,38 +72,84 @@ func connectSNMP(t Target) (*gosnmp.GoSNMP, error) {
 	return g, nil
 }
 
-func collectFrom(t Target, routerSelfLLs map[string]struct{}) ([]neighbor, error) {
-	g, err := connectSNMP(t)
+// collectFrom polls one target. It is the collector's collectFunc.
+func collectFrom(ctx context.Context, t Target) ([]neighbor, error) {
+	g, err := connectSNMP(ctx, t)
 	if err != nil {
 		return nil, err
 	}
 	defer g.Conn.Close()
+	// gosnmp honours the context deadline between requests; closing the
+	// connection also interrupts a request that is waiting for its reply.
+	stop := context.AfterFunc(ctx, func() { g.Conn.Close() })
+	defer stop()
 
-	ifNames := walkIfNames(g)
-	routers := walkIPv6Routers(g)
-	all, err := walkNeighborTable(g, ifNames, routers)
+	ifNames, err := walkIfNames(g)
+	if err != nil {
+		// Without names every neighbor would fail the interface filter and
+		// the target would look empty, so the poll counts as failed.
+		if t.IfName != "" {
+			return nil, fmt.Errorf("interface filter %q cannot be applied: %w", t.IfName, err)
+		}
+		log.Printf("snmp %s: %v (neighbors are exported without interface names)", t.Host, err)
+	} else if t.IfName != "" && !hasIfName(ifNames, t.IfName) {
+		log.Printf("snmp %s: interface %q is not among the target's %d interface(s); no neighbor will match", t.Host, t.IfName, len(ifNames))
+	}
+
+	routers, err := walkIPv6Routers(g)
+	if err != nil {
+		log.Printf("snmp %s: walk inetCidrRouteTable: %v (is_router not derived from routes)", t.Host, err)
+	}
+
+	entries, malformed, err := walkNeighborTable(g)
 	if err != nil {
 		return nil, err
 	}
+	if malformed > 0 {
+		log.Printf("snmp %s: skipped %d malformed ipNetToPhysicalTable row(s)", t.Host, malformed)
+	}
+	return exportNeighbors(entries, ifNames, routers, t.IfName, time.Now()), nil
+}
 
-	var out []neighbor
-	for _, n := range all {
-		// Filter to internal interface if registered.
-		if t.IfName != "" && n.IfName != t.IfName {
+func hasIfName(ifNames map[int]string, name string) bool {
+	for _, n := range ifNames {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
+// exportNeighbors turns raw table entries into the served form. It keeps
+// only entries that can receive an RA (see exportableState) with a non-empty
+// link-layer address and, when ifname is set, only those on that interface.
+func exportNeighbors(entries []neighborEntry, ifNames map[int]string, routers map[string]struct{}, ifname string, now time.Time) []neighbor {
+	updatedAt := now.UTC().Format(time.RFC3339)
+	out := make([]neighbor, 0, len(entries))
+	for _, e := range entries {
+		state, ok := exportableState(e.state)
+		if !ok || len(e.mac) == 0 {
 			continue
 		}
-		// Promote entries whose IP matches any router's known SelfLL.
-		if _, isRouter := routerSelfLLs[n.IP]; isRouter {
-			n.IsRouter = 1
+		name := ifNames[e.ifIndex]
+		if ifname != "" && name != ifname {
+			continue
 		}
-		if t.Label != "" {
-			n.Source = t.Label
-		} else {
-			n.Source = t.Host
+		isRouter := 0
+		if _, ok := routers[e.ip.String()]; ok {
+			isRouter = 1
 		}
-		out = append(out, n)
+		out = append(out, neighbor{
+			IP:        e.ip.String(),
+			LLAddr:    macString(e.mac),
+			IfIndex:   e.ifIndex,
+			IfName:    name,
+			State:     state,
+			IsRouter:  isRouter,
+			UpdatedAt: updatedAt,
+		})
 	}
-	return out, nil
+	return out
 }
 
 // walkIPv6Routers collects IPv6 next-hop addresses from inetCidrRouteTable (IP-MIB, RFC 4292).
@@ -284,10 +158,10 @@ func collectFrom(t Target, routerSelfLLs map[string]struct{}) ([]neighbor, error
 //	{destType}.{destLen}.{destBytes...}.{pfxLen}.{policyLen}.{policyArcs...}.{nhType}.{nhLen}.{nhBytes...}
 //
 // Returns an empty map if the MIB is not accessible on the target.
-func walkIPv6Routers(g *gosnmp.GoSNMP) map[string]struct{} {
+func walkIPv6Routers(g *gosnmp.GoSNMP) (map[string]struct{}, error) {
 	routers := map[string]struct{}{}
 	colPrefix := oidInetCidrRoute + ".1."
-	_ = g.BulkWalk(oidInetCidrRoute, func(pdu gosnmp.SnmpPDU) error {
+	err := g.BulkWalk(oidInetCidrRoute, func(pdu gosnmp.SnmpPDU) error {
 		oid := strings.TrimPrefix(pdu.Name, ".")
 		if !strings.HasPrefix(oid, colPrefix) {
 			return nil
@@ -303,79 +177,91 @@ func walkIPv6Routers(g *gosnmp.GoSNMP) map[string]struct{} {
 			return nil
 		}
 		ip, err := parseInetCidrRouteNextHop(index)
-		if err != nil || ip == nil || ip.IsUnspecified() {
+		if err != nil || ip.IsUnspecified() {
 			return nil
 		}
 		routers[ip.String()] = struct{}{}
 		return nil
 	})
-	return routers
+	return routers, err
 }
 
-// parseInetCidrRouteNextHop extracts the next-hop IPv6 address from an inetCidrRouteTable OID index suffix.
+// parseInetCidrRouteNextHop extracts the next-hop IPv6 address from an
+// inetCidrRouteTable OID index suffix. It returns errNotIPv6 for a next hop
+// of another address type.
 func parseInetCidrRouteNextHop(s string) (net.IP, error) {
 	parts := strings.Split(s, ".")
 	i := 0
-	next := func() (int, bool) {
+	// next reads one sub-identifier used as a type or a length.
+	next := func() (int, error) {
 		if i >= len(parts) {
-			return 0, false
+			return 0, fmt.Errorf("short index")
 		}
-		v, err := strconv.Atoi(parts[i])
+		v, err := strconv.ParseUint(parts[i], 10, 16)
 		i++
-		return v, err == nil
+		if err != nil {
+			return 0, fmt.Errorf("bad sub-identifier %q", parts[i-1])
+		}
+		return int(v), nil
+	}
+	// skip advances over n sub-identifiers.
+	skip := func(n int) error {
+		if n > len(parts)-i {
+			return fmt.Errorf("short index")
+		}
+		i += n
+		return nil
 	}
 
 	// skip destType
-	if _, ok := next(); !ok {
-		return nil, fmt.Errorf("short index")
+	if _, err := next(); err != nil {
+		return nil, err
 	}
 	// skip dest: length + bytes
-	destLen, ok := next()
-	if !ok {
-		return nil, fmt.Errorf("short index")
+	destLen, err := next()
+	if err != nil {
+		return nil, err
 	}
-	i += destLen
+	if err := skip(destLen); err != nil {
+		return nil, err
+	}
 	// skip pfxLen
-	if _, ok := next(); !ok {
-		return nil, fmt.Errorf("short index")
+	if _, err := next(); err != nil {
+		return nil, err
 	}
 	// skip policy OID: length + arcs
-	policyLen, ok := next()
-	if !ok {
-		return nil, fmt.Errorf("short index")
+	policyLen, err := next()
+	if err != nil {
+		return nil, err
 	}
-	i += policyLen
-	// read nhType
-	nhType, ok := next()
-	if !ok {
-		return nil, fmt.Errorf("short index")
+	if err := skip(policyLen); err != nil {
+		return nil, err
 	}
-	if nhType != 2 { // only IPv6 (InetAddressType = 2)
-		return nil, nil
+	nhType, err := next()
+	if err != nil {
+		return nil, err
 	}
-	// read nhLen + nhBytes
-	nhLen, ok := next()
-	if !ok || nhLen != 16 {
-		return nil, fmt.Errorf("unexpected nhLen %d", nhLen)
+	nhLen, err := next()
+	if err != nil {
+		return nil, err
 	}
-	if i+nhLen > len(parts) {
-		return nil, fmt.Errorf("short index")
+	if nhLen != len(parts)-i {
+		return nil, fmt.Errorf("next hop length %d, but %d sub-identifier(s) follow", nhLen, len(parts)-i)
 	}
-	b := make([]byte, nhLen)
-	for j := range nhLen {
-		v, err := strconv.Atoi(parts[i+j])
-		if err != nil {
-			return nil, err
-		}
-		b[j] = byte(v)
+	b, err := oidBytes(parts[i:])
+	if err != nil {
+		return nil, err
 	}
-	return net.IP(b), nil
+	return inetIPv6(nhType, b)
 }
 
-func walkIfNames(g *gosnmp.GoSNMP) map[int]string {
+// walkIfNames returns ifIndex → name from IF-MIB::ifName, falling back to
+// ifDescr. It returns an error when neither walk yields a name.
+func walkIfNames(g *gosnmp.GoSNMP) (map[int]string, error) {
 	names := map[int]string{}
+	var walkErr error
 	for _, oid := range []string{oidIfName, oidIfDescr} {
-		_ = g.BulkWalk(oid, func(pdu gosnmp.SnmpPDU) error {
+		err := g.BulkWalk(oid, func(pdu gosnmp.SnmpPDU) error {
 			idx := lastOIDComponent(pdu.Name)
 			if idx <= 0 {
 				return nil
@@ -388,11 +274,21 @@ func walkIfNames(g *gosnmp.GoSNMP) map[int]string {
 			}
 			return nil
 		})
+		if err != nil {
+			// A partial walk would make the interface filter drop the
+			// neighbors of the interfaces it missed.
+			walkErr = errors.Join(walkErr, fmt.Errorf("walk %s: %w", oid, err))
+			clear(names)
+			continue
+		}
 		if len(names) > 0 {
-			break
+			return names, nil
 		}
 	}
-	return names
+	if walkErr != nil {
+		return names, fmt.Errorf("interface names: %w", walkErr)
+	}
+	return names, errors.New("interface names: target returned neither ifName nor ifDescr")
 }
 
 type neighborEntry struct {
@@ -402,11 +298,14 @@ type neighborEntry struct {
 	state   int
 }
 
-func walkNeighborTable(g *gosnmp.GoSNMP, ifNames map[int]string, routers map[string]struct{}) ([]neighbor, error) {
+// walkNeighborTable reads the IPv6 rows of ipNetToPhysicalTable. malformed
+// counts the rows skipped because their index could not be decoded.
+func walkNeighborTable(g *gosnmp.GoSNMP) (out []neighborEntry, malformed int, err error) {
 	entries := map[string]*neighborEntry{}
+	bad := map[string]struct{}{}
 	colPrefix := oidNeighborTable + ".1."
 
-	err := g.BulkWalk(oidNeighborTable, func(pdu gosnmp.SnmpPDU) error {
+	err = g.BulkWalk(oidNeighborTable, func(pdu gosnmp.SnmpPDU) error {
 		oid := strings.TrimPrefix(pdu.Name, ".")
 		if !strings.HasPrefix(oid, colPrefix) {
 			return nil
@@ -420,8 +319,11 @@ func walkNeighborTable(g *gosnmp.GoSNMP, ifNames map[int]string, routers map[str
 		if err != nil {
 			return nil
 		}
-		ifIndex, addrType, ip, err := parseNeighborIndex(index)
-		if err != nil || addrType != 2 { // 2 = ipv6
+		ifIndex, ip, err := parseNeighborIndex(index)
+		if err != nil {
+			if !errors.Is(err, errNotIPv6) {
+				bad[index] = struct{}{}
+			}
 			return nil
 		}
 		key := fmt.Sprintf("%d/%s", ifIndex, ip.String())
@@ -443,63 +345,80 @@ func walkNeighborTable(g *gosnmp.GoSNMP, ifNames map[int]string, routers map[str
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("walk ipNetToPhysicalTable: %w", err)
+		return nil, 0, fmt.Errorf("walk ipNetToPhysicalTable: %w", err)
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	out := make([]neighbor, 0, len(entries))
+	out = make([]neighborEntry, 0, len(entries))
 	for _, e := range entries {
-		state := neighborStates[e.state]
-		if state == "" {
-			state = "UNKNOWN"
-		}
-		isRouter := 0
-		if _, ok := routers[e.ip.String()]; ok {
-			isRouter = 1
-		}
-		out = append(out, neighbor{
-			IP:        e.ip.String(),
-			LLAddr:    macString(e.mac),
-			IfIndex:   e.ifIndex,
-			IfName:    ifNames[e.ifIndex],
-			State:     state,
-			IsRouter:  isRouter,
-			UpdatedAt: now,
-		})
+		out = append(out, *e)
 	}
-	return out, nil
+	return out, len(bad), nil
 }
 
-// parseNeighborIndex parses "{ifIndex}.{addrType}.{addrLen}.{bytes...}" from an OID index suffix.
-func parseNeighborIndex(s string) (ifIndex, addrType int, ip net.IP, err error) {
+// parseNeighborIndex parses "{ifIndex}.{addrType}.{addrLen}.{bytes...}" from
+// an ipNetToPhysicalTable OID index suffix. It returns errNotIPv6 for a
+// well-formed index of another address type.
+func parseNeighborIndex(s string) (ifIndex int, ip net.IP, err error) {
 	parts := strings.Split(s, ".")
 	if len(parts) < 3 {
-		return 0, 0, nil, fmt.Errorf("index too short")
+		return 0, nil, fmt.Errorf("index too short")
 	}
-	ifIndex, err = strconv.Atoi(parts[0])
+	idx, err := strconv.ParseUint(parts[0], 10, 31)
+	if err != nil || idx == 0 {
+		return 0, nil, fmt.Errorf("bad ifIndex %q", parts[0])
+	}
+	addrType, err := strconv.ParseUint(parts[1], 10, 16)
 	if err != nil {
-		return
+		return 0, nil, fmt.Errorf("bad address type %q", parts[1])
 	}
-	addrType, err = strconv.Atoi(parts[1])
+	addrLen, err := strconv.ParseUint(parts[2], 10, 16)
 	if err != nil {
-		return
+		return 0, nil, fmt.Errorf("bad address length %q", parts[2])
 	}
-	addrLen, err := strconv.Atoi(parts[2])
+	if int(addrLen) != len(parts)-3 {
+		return 0, nil, fmt.Errorf("address length %d, but %d sub-identifier(s) follow", addrLen, len(parts)-3)
+	}
+	b, err := oidBytes(parts[3:])
 	if err != nil {
-		return 0, 0, nil, err
+		return 0, nil, err
 	}
-	if len(parts) < 3+addrLen {
-		return 0, 0, nil, fmt.Errorf("not enough address bytes: need %d, have %d", addrLen, len(parts)-3)
+	ip, err = inetIPv6(int(addrType), b)
+	if err != nil {
+		return 0, nil, err
 	}
-	b := make([]byte, addrLen)
-	for i := range addrLen {
-		v, e := strconv.Atoi(parts[3+i])
-		if e != nil {
-			return 0, 0, nil, e
+	return int(idx), ip, nil
+}
+
+// oidBytes converts OID sub-identifiers that encode an octet string to
+// bytes. A sub-identifier outside 0..255 is an error, not truncated.
+func oidBytes(parts []string) ([]byte, error) {
+	b := make([]byte, len(parts))
+	for i, p := range parts {
+		v, err := strconv.ParseUint(p, 10, 8)
+		if err != nil {
+			return nil, fmt.Errorf("sub-identifier %q is not an octet", p)
 		}
 		b[i] = byte(v)
 	}
-	return ifIndex, addrType, net.IP(b), nil
+	return b, nil
+}
+
+// inetIPv6 decodes an InetAddress of type ipv6(2) (16 bytes) or ipv6z(4)
+// (20 bytes; the 4-byte zone index is dropped). Other types yield errNotIPv6.
+func inetIPv6(addrType int, b []byte) (net.IP, error) {
+	var want int
+	switch addrType {
+	case inetTypeIPv6:
+		want = 16
+	case inetTypeIPv6z:
+		want = 20
+	default:
+		return nil, errNotIPv6
+	}
+	if len(b) != want {
+		return nil, fmt.Errorf("InetAddressType %d needs %d bytes, got %d", addrType, want, len(b))
+	}
+	return net.IP(b[:16:16]), nil
 }
 
 func lastOIDComponent(oid string) int {

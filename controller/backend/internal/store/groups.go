@@ -62,6 +62,19 @@ func (s *GroupStore) Create(g *Group) (int, error) {
 	return int(id), nil
 }
 
+// Update replaces the name, members and rules of a group.
+func (s *GroupStore) Update(g *Group) error {
+	res, err := s.db.Exec(`UPDATE groups SET name=?, rules=?, members=?, updated_at=datetime('now') WHERE id=?`,
+		g.Name, marshalJSON(g.Rules), marshalJSON(g.Members), g.ID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("group not found: %d", g.ID)
+	}
+	return nil
+}
+
 func (s *GroupStore) UpdateRules(id int, rules []int) error {
 	rulesJSON := marshalJSON(rules)
 	res, err := s.db.Exec(`UPDATE groups SET rules=?, updated_at=datetime('now') WHERE id=?`, rulesJSON, id)

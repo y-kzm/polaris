@@ -1,41 +1,26 @@
 import { useState } from 'react';
-import { Plus, Trash2, ChevronDown, ChevronRight, X, Globe } from 'lucide-react';
-import type { Rule, RouterConfig, Entry, Group } from '../types';
+import { Plus, Trash2, ChevronDown, ChevronRight, Pencil } from 'lucide-react';
+import type { Rule, RouterConfig, Group, RuleInput, ServiceCatalog } from '../types';
+import EntryRow from './EntryRow';
+import RuleForm from './RuleForm';
 
 interface RulesTabProps {
   rules: Rule[];
   routers: RouterConfig[];
   groups: Group[];
-  newRule: { comment: string; entries: Entry[]; nexthop: string };
-  newRuleEntry: Entry;
-  expandedRules: Record<number, boolean>;
-  onNewRuleChange: (rule: { comment: string; entries: Entry[]; nexthop: string }) => void;
-  onNewRuleEntryChange: (entry: Entry) => void;
-  onAddRule: () => void;
-  onAddEntry: () => void;
-  onRemoveEntry: (index: number) => void;
+  catalog: ServiceCatalog;
+  /** Creates (no id) or replaces a rule. Rejects with the backend's message. */
+  onSaveRule: (input: RuleInput, id?: number) => Promise<void>;
   onDeleteRule: (id: number) => void;
-  onToggleExpanded: (ruleId: number) => void;
-  onOpenFqdnModal: () => void;
 }
 
-export default function RulesTab({
-  rules,
-  routers,
-  groups,
-  newRule,
-  newRuleEntry,
-  expandedRules,
-  onNewRuleChange,
-  onNewRuleEntryChange,
-  onAddRule,
-  onAddEntry,
-  onRemoveEntry,
-  onDeleteRule,
-  onToggleExpanded,
-  onOpenFqdnModal,
-}: RulesTabProps) {
+export default function RulesTab({ rules, routers, groups, catalog, onSaveRule, onDeleteRule }: RulesTabProps) {
   const [showAddForm, setShowAddForm] = useState(false);
+  const [editingRuleId, setEditingRuleId] = useState<number | null>(null);
+  const [expandedRules, setExpandedRules] = useState<Record<number, boolean>>({});
+
+  const onToggleExpanded = (ruleId: number) =>
+    setExpandedRules(prev => ({ ...prev, [ruleId]: !prev[ruleId] }));
 
   // The Nexthop field can hold either router.id (UUID) or router.address.
   const findRouter = (nexthop: string) =>
@@ -48,11 +33,6 @@ export default function RulesTab({
 
   const usedByGroups = (ruleId: number) =>
     groups.filter(g => g.rules.includes(ruleId));
-
-  const handleAddRule = () => {
-    onAddRule();
-    setShowAddForm(false);
-  };
 
   return (
     <div>
@@ -78,14 +58,27 @@ export default function RulesTab({
         )}
 
         {rules.map(rule => {
-          const isDefault = rule.entries.some(e => e.value === '::/0');
+          if (editingRuleId === rule.id) {
+            return (
+              <RuleForm
+                key={rule.id}
+                initial={rule}
+                routers={routers}
+                catalog={catalog}
+                onSubmit={async input => { await onSaveRule(input, rule.id); setEditingRuleId(null); }}
+                onCancel={() => setEditingRuleId(null)}
+              />
+            );
+          }
+          const isDefault = rule.entries.some(e => e.type === 'ipv6' && e.value === '::/0');
           const title = rule.comment || `Rule #${rule.id}`;
           const router = findRouter(rule.nexthop);
           const usingGroups = usedByGroups(rule.id);
           const isExpanded = expandedRules[rule.id];
 
           // Inline prefix preview shown when collapsed
-          const previewPrefixes = rule.entries.slice(0, 2).map(e => e.value);
+          const previewPrefixes = rule.entries.slice(0, 2)
+            .map(e => (e.type === 'service' ? `service: ${e.value}` : e.value));
           const overflowCount = rule.entries.length - 2;
 
           return (
@@ -139,19 +132,11 @@ export default function RulesTab({
                     {isExpanded && (
                       <div className="mt-1.5 space-y-1 border-l-2 border-gray-200 pl-3 ml-1">
                         {rule.entries.map((entry, idx) => (
-                          <div key={idx} className="flex items-center gap-2">
-                            <span className={`px-1.5 py-0.5 text-xs rounded ${
-                              entry.type === 'fqdn'
-                                ? 'bg-green-100 text-green-700'
-                                : 'bg-gray-100 text-gray-600'
-                            }`}>
-                              {entry.type === 'fqdn' ? 'FQDN' : 'IPv6'}
-                            </span>
-                            <span className="font-mono text-xs text-gray-700">{entry.value}</span>
-                            {entry.service && (
-                              <span className="text-xs text-gray-400">({entry.service})</span>
-                            )}
-                          </div>
+                          <EntryRow
+                            key={`${entry.type}|${entry.value}|${idx}`}
+                            entry={entry}
+                            fetchEndpoints={catalog.fetchEndpoints}
+                          />
                         ))}
                       </div>
                     )}
@@ -164,142 +149,44 @@ export default function RulesTab({
                     {router && (
                       <span className="font-mono text-gray-400 ml-1">({router.address})</span>
                     )}
+                    {router?.status === 'inactive' && (
+                      <span className="ml-2 px-1.5 py-0.5 rounded bg-gray-200 text-gray-600">
+                        inactive: this rule is skipped
+                      </span>
+                    )}
                   </p>
                 </div>
 
-                <button
-                  onClick={() => onDeleteRule(rule.id)}
-                  className="text-red-400 hover:text-red-600 flex-shrink-0 mt-0.5"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                <div className="flex items-center gap-3 flex-shrink-0 mt-0.5">
+                  <button
+                    onClick={() => setEditingRuleId(rule.id)}
+                    className="text-gray-400 hover:text-blue-600"
+                    title="Edit rule"
+                  >
+                    <Pencil className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => onDeleteRule(rule.id)}
+                    className="text-red-400 hover:text-red-600"
+                    title="Delete rule (it is also removed from every group)"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
             </div>
           );
         })}
       </div>
 
-      {/* Add form (toggled) */}
+      {/* Add form (toggled); it closes only after the backend accepted the rule */}
       {showAddForm && (
-        <div className="border border-blue-200 rounded-lg p-5 bg-blue-50">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-semibold text-gray-700 text-sm">New Policy Rule</h3>
-            <button
-              onClick={() => setShowAddForm(false)}
-              className="text-gray-400 hover:text-gray-600"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-
-          <div className="space-y-4">
-            {/* Name / Comment */}
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Name / Comment</label>
-              <input
-                type="text"
-                value={newRule.comment}
-                onChange={e => onNewRuleChange({ ...newRule, comment: e.target.value })}
-                placeholder="e.g., Microsoft 365 → Router-A"
-                className="w-full px-3 py-2 border rounded-lg text-sm bg-white"
-              />
-            </div>
-
-            {/* Prefix list */}
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-2">Prefix List</label>
-              {newRule.entries.length > 0 && (
-                <div className="mb-2 p-3 bg-white rounded-lg border space-y-1.5">
-                  {newRule.entries.map((entry, idx) => (
-                    <div key={idx} className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className={`px-1.5 py-0.5 text-xs rounded ${
-                          entry.type === 'fqdn' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'
-                        }`}>
-                          {entry.type === 'fqdn' ? 'FQDN' : 'IPv6'}
-                        </span>
-                        <span className="font-mono text-xs text-gray-700">{entry.value}</span>
-                        {entry.service && <span className="text-xs text-gray-400">({entry.service})</span>}
-                      </div>
-                      <button onClick={() => onRemoveEntry(idx)} className="text-red-400 hover:text-red-600">
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className="flex gap-2">
-                <select
-                  value={newRuleEntry.type}
-                  onChange={e => onNewRuleEntryChange({ ...newRuleEntry, type: e.target.value as 'ipv6' | 'fqdn' })}
-                  className="px-3 py-2 border rounded-lg text-sm bg-white"
-                >
-                  <option value="ipv6">IPv6 Prefix</option>
-                  <option value="fqdn">FQDN Service</option>
-                </select>
-                {newRuleEntry.type === 'ipv6' ? (
-                  <>
-                    <input
-                      type="text"
-                      value={newRuleEntry.value}
-                      onChange={e => onNewRuleEntryChange({ ...newRuleEntry, value: e.target.value })}
-                      placeholder="2001:db8::/32 or ::/0 for default"
-                      className="flex-1 px-3 py-2 border rounded-lg text-sm bg-white"
-                      onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); onAddEntry(); } }}
-                    />
-                    <button
-                      onClick={onAddEntry}
-                      disabled={!newRuleEntry.value}
-                      className="px-3 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 disabled:bg-gray-300 transition"
-                    >
-                      <Plus className="w-4 h-4" />
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    onClick={onOpenFqdnModal}
-                    className="flex-1 flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 text-sm justify-center transition"
-                  >
-                    <Globe className="w-4 h-4" />
-                    Select FQDN Service
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Advertising router */}
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Advertising Router</label>
-              <select
-                value={newRule.nexthop}
-                onChange={e => onNewRuleChange({ ...newRule, nexthop: e.target.value })}
-                className="w-full px-3 py-2 border rounded-lg text-sm bg-white"
-              >
-                <option value="">Select router...</option>
-                {routers.map(r => (
-                  <option key={r.id} value={r.address}>{r.name} ({r.address})</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="flex gap-2 pt-1">
-              <button
-                onClick={handleAddRule}
-                disabled={newRule.entries.length === 0 || !newRule.nexthop}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-sm transition"
-              >
-                <Plus className="w-4 h-4" />
-                Add Policy Rule
-              </button>
-              <button
-                onClick={() => setShowAddForm(false)}
-                className="px-4 py-2 border rounded-lg hover:bg-white text-sm text-gray-600 transition"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
+        <RuleForm
+          routers={routers}
+          catalog={catalog}
+          onSubmit={async input => { await onSaveRule(input); setShowAddForm(false); }}
+          onCancel={() => setShowAddForm(false)}
+        />
       )}
     </div>
   );

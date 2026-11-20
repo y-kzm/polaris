@@ -73,7 +73,11 @@ type hostState map[string]*content
 // Problems that do not prevent compilation (unknown next hop, malformed
 // entry, the same prefix assigned to two routers for one host) are returned
 // as warnings.
-func Compile(rules []store.Rule, groups []store.Group, routers []store.Router) (map[string][]Message, []string) {
+//
+// resolve turns the name of a service entry into its prefixes; it may be nil
+// if the rules contain no service entries. Rules that designate an inactive
+// router are skipped.
+func Compile(rules []store.Rule, groups []store.Group, routers []store.Router, resolve Resolver) (map[string][]Message, []string) {
 	var warnings []string
 	warn := func(format string, args ...any) {
 		warnings = append(warnings, fmt.Sprintf(format, args...))
@@ -110,7 +114,11 @@ func Compile(rules []store.Rule, groups []store.Group, routers []store.Router) (
 				warn("rule %d: next hop %q is not a registered router", rule.ID, rule.Nexthop)
 				continue
 			}
-			prefixes := rulePrefixes(rule, warn)
+			if !router.Active() {
+				warn("rule %d: %s is inactive; the rule is not enforced", rule.ID, router.Name)
+				continue
+			}
+			prefixes := rulePrefixes(rule, resolve, warn)
 			if states[router.ID] == nil {
 				states[router.ID] = hostState{}
 			}
@@ -181,25 +189,56 @@ func groupByContent(st hostState) []Message {
 
 // rulePrefixes returns the canonical destination prefixes of a rule. A bare
 // address is treated as a /128.
-func rulePrefixes(rule *store.Rule, warn func(string, ...any)) []string {
+func rulePrefixes(rule *store.Rule, resolve Resolver, warn func(string, ...any)) []string {
 	seen := map[string]struct{}{}
 	var out []string
-	for _, e := range rule.Entries {
-		p, err := parsePrefix(e.Value)
+	add := func(value, origin string) {
+		p, err := ParsePrefix(value)
 		if err != nil {
-			warn("rule %d: entry %q is not an IPv6 prefix; skipped", rule.ID, e.Value)
+			warn("rule %d: %s %q is not an IPv6 prefix; skipped", rule.ID, origin, value)
+			return
+		}
+		if _, ok := seen[p]; !ok {
+			seen[p] = struct{}{}
+			out = append(out, p)
+		}
+	}
+	for _, e := range rule.Entries {
+		if e.Type != EntryService {
+			add(e.Value, "entry")
 			continue
 		}
-		if _, ok := seen[p]; ok {
+		if resolve == nil {
+			warn("rule %d: service %q cannot be resolved: no endpoint source is configured", rule.ID, e.Value)
 			continue
 		}
-		seen[p] = struct{}{}
-		out = append(out, p)
+		prefixes, note, err := resolve(e.Value)
+		if err != nil {
+			warn("rule %d: service %q contributes no prefix: %v", rule.ID, e.Value, err)
+			continue
+		}
+		if note != "" {
+			warn("service %q: %s", e.Value, note)
+		}
+		for _, p := range prefixes {
+			add(p, fmt.Sprintf("prefix of service %q", e.Value))
+		}
 	}
 	return out
 }
 
-func parsePrefix(s string) (string, error) {
+// EntryService is the type of a rule entry that names a service; its
+// prefixes are looked up at every compile. Every other entry is a literal
+// IPv6 prefix.
+const EntryService = "service"
+
+// Resolver returns the IPv6 prefixes of a service. A non-empty note reports
+// that the answer is not fresh (for example, taken from a cache).
+type Resolver func(service string) (prefixes []string, note string, err error)
+
+// ParsePrefix returns the canonical form of an IPv6 prefix. A bare address
+// is treated as a host prefix.
+func ParsePrefix(s string) (string, error) {
 	s = strings.TrimSpace(s)
 	p, err := netip.ParsePrefix(s)
 	if err != nil {
@@ -234,6 +273,9 @@ func canonicalHosts(members []string, invalid func(string)) []string {
 	}
 	return out
 }
+
+// CanonicalHost returns the canonical form of a link-local unicast address.
+func CanonicalHost(s string) (string, bool) { return canonicalHost(s) }
 
 func canonicalHost(s string) (string, bool) {
 	addr, err := netip.ParseAddr(strings.TrimSpace(s))

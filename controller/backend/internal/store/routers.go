@@ -82,6 +82,15 @@ func (s *RouterStore) Delete(id string) error {
 	return err
 }
 
+// Router statuses. An inactive router takes no part in the policy.
+const (
+	StatusActive   = "active"
+	StatusInactive = "inactive"
+)
+
+// Active reports whether the router takes part in the policy.
+func (r *Router) Active() bool { return r.Status != StatusInactive }
+
 func boolInt(b bool) int {
 	if b {
 		return 1

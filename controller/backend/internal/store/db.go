@@ -58,6 +58,17 @@ func migrate(db *sql.DB) error {
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
 			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 		);
+		CREATE TABLE IF NOT EXISTS applied_policy (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			rules TEXT NOT NULL,
+			groups TEXT NOT NULL,
+			applied_at TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS service_cache (
+			name TEXT PRIMARY KEY,
+			prefixes TEXT NOT NULL,
+			resolved_at TEXT NOT NULL
+		);
 		CREATE TABLE IF NOT EXISTS neighbors (
 			id TEXT PRIMARY KEY,
 			lladdr TEXT NOT NULL DEFAULT '',

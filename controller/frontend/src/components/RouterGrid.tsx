@@ -1,6 +1,7 @@
 import { Router } from 'lucide-react';
 import type { RouterConfig, RouterStatus } from '../types';
 import StatusLed from './StatusLed';
+import { INACTIVE_EXPLANATION } from '../utils/format';
 
 interface RouterGridProps {
   routers: RouterConfig[];
@@ -45,10 +46,13 @@ export default function RouterGrid({ routers, routerStatuses, onToggleStatus, on
                 {/* Admin state toggle */}
                 <button
                   onClick={() => onToggleStatus(router.id)}
+                  title={isActive
+                    ? `Active: takes part in the policy. Click to set inactive. ${INACTIVE_EXPLANATION}.`
+                    : `${INACTIVE_EXPLANATION}. Click to set active.`}
                   className={`px-2 py-0.5 text-xs rounded font-medium cursor-pointer transition ${
                     isActive
                       ? 'bg-green-100 text-green-700 hover:bg-green-200'
-                      : 'bg-red-100 text-red-700 hover:bg-red-200'
+                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
                   }`}
                 >
                   {isActive ? 'Active' : 'Inactive'}
@@ -58,6 +62,9 @@ export default function RouterGrid({ routers, routerStatuses, onToggleStatus, on
 
             <p className="text-xs font-mono text-gray-600">{router.address}</p>
             <p className="text-xs text-gray-400 mt-0.5">Interface: {router.interface}</p>
+            {!isActive && (
+              <p className="text-xs text-gray-600 bg-gray-100 rounded px-2 py-1 mt-2">{INACTIVE_EXPLANATION}.</p>
+            )}
 
             {/* gRPC status detail */}
             {status && (

@@ -1,5 +1,6 @@
-import type { Neighbor } from '../../types';
+import type { Neighbor, SourcesStatus } from '../../types';
 import StatusLed from '../StatusLed';
+import SourceBanner from '../SourceBanner';
 import { neighborLedStatus } from '../../utils/format';
 
 interface NeighborModalProps {
@@ -7,8 +8,11 @@ interface NeighborModalProps {
   selectedNeighbors: string[];
   lastCheckedIndex: number | null;
   sourceDescription: string;
+  sources: SourcesStatus | null;
   onSelectionChange: (neighbors: string[]) => void;
   onLastCheckedIndexChange: (index: number) => void;
+  /** Closes the picker and puts the selection back as it was when it opened. */
+  onCancel: () => void;
   onClose: () => void;
 }
 
@@ -17,8 +21,10 @@ export default function NeighborModal({
   selectedNeighbors,
   lastCheckedIndex,
   sourceDescription,
+  sources,
   onSelectionChange,
   onLastCheckedIndexChange,
+  onCancel,
   onClose,
 }: NeighborModalProps) {
   return (
@@ -30,6 +36,7 @@ export default function NeighborModal({
         </div>
 
         <div className="overflow-y-auto max-h-[60vh] p-6">
+          <SourceBanner kind="neighbors" sources={sources} />
           {neighbors.length === 0 ? (
             <p className="text-sm text-gray-400 text-center py-8">No entries in ND cache.</p>
           ) : (
@@ -86,7 +93,7 @@ export default function NeighborModal({
           </span>
           <div className="flex gap-3">
             <button
-              onClick={() => { onClose(); onSelectionChange([]); }}
+              onClick={onCancel}
               className="px-4 py-2 border rounded-lg hover:bg-gray-50 text-sm"
             >
               Cancel

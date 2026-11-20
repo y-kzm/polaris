@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -39,7 +40,7 @@ func TestCompilePaperExample(t *testing.T) {
 		group("G2", []int{2}, "fe80::2"),
 	}
 
-	got, warnings := Compile(rules, groups, testRouters)
+	got, warnings := Compile(rules, groups, testRouters, nil)
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %v", warnings)
 	}
@@ -64,7 +65,7 @@ func TestCompileMergesRulesPerRouterAndHost(t *testing.T) {
 		group("G2", []int{2}, "fe80::2", "FE80::3"),
 	}
 
-	got, warnings := Compile(rules, groups, testRouters)
+	got, warnings := Compile(rules, groups, testRouters, nil)
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %v", warnings)
 	}
@@ -98,7 +99,7 @@ func TestCompileWarnings(t *testing.T) {
 		group("G1", []int{1, 2, 3, 99}, "fe80::1", "2001:db8::1"),
 	}
 
-	got, warnings := Compile(rules, groups, testRouters)
+	got, warnings := Compile(rules, groups, testRouters, nil)
 
 	for _, want := range []string{
 		`"not-a-prefix" is not an IPv6 prefix`,
@@ -120,5 +121,38 @@ func TestCompileWarnings(t *testing.T) {
 	// Compilation still succeeds for the valid parts.
 	if len(got["a"]) != 1 || len(got["b"]) != 1 {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+// A service entry is replaced by the prefixes it resolves to at compile time.
+func TestCompileResolvesServices(t *testing.T) {
+	rules := []store.Rule{{ID: 1, Nexthop: routerA.Address, Entries: []store.Entry{
+		{Type: EntryService, Value: "Teams"},
+		{Type: "ipv6", Value: "2001:db8:9::/48"},
+		{Type: EntryService, Value: "Gone"},
+	}}}
+	groups := []store.Group{group("G", []int{1}, "fe80::1")}
+	resolve := func(name string) ([]string, string, error) {
+		if name == "Teams" {
+			return []string{"2603:1027::/48", "2001:DB8:9::/48", "not-a-prefix"}, "cached", nil
+		}
+		return nil, "", errors.New("unknown service")
+	}
+
+	got, warnings := Compile(rules, groups, testRouters, resolve)
+
+	want := []string{"2001:db8:9::/48", "2603:1027::/48"}
+	if msgs := got["a"]; len(msgs) != 1 || !reflect.DeepEqual(msgs[0].Routes, want) {
+		t.Fatalf("messages = %+v; want routes %v", got["a"], want)
+	}
+	joined := strings.Join(warnings, "\n")
+	for _, part := range []string{`service "Teams": cached`, `"not-a-prefix"`, `service "Gone" contributes no prefix`} {
+		if !strings.Contains(joined, part) {
+			t.Errorf("warnings lack %q:\n%s", part, joined)
+		}
+	}
+
+	if _, warnings := Compile(rules, groups, testRouters, nil); !strings.Contains(strings.Join(warnings, "\n"), "no endpoint source") {
+		t.Errorf("without a resolver: %v", warnings)
 	}
 }

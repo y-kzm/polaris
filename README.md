@@ -44,6 +44,7 @@ unicast RAs to the targeted hosts, modifying their default gateway
 | [`controller/`](controller/) | RA Controller — Go backend, React/Vite frontend, neighbor & endpoint collector modules |
 | [`laboratory/`](laboratory/) | Self-contained Docker Compose lab (3 routers, 10 hosts, controller, web server) |
 | [`experiments/`](experiments/) | Scripts that build the experiment site (2 routers, 2 ISPs, 200 hosts) and run the experiments of the paper |
+| [`docs/design.md`](docs/design.md) | Design of the controller: component boundaries, contracts, policy lifecycle, start-up |
 
 Each subdirectory has its own README — see those for build & deployment
 details.
@@ -68,12 +69,14 @@ the verification checks, and the note on kernels without RIO support.
 
 ### 2. Standalone controller (for testing against real routers)
 
-Run the controller as a regular process (or systemd unit) on a management
-host, with `gora` agents already deployed on your routers.
+Run the controller on a management host, with `gora` agents already deployed
+on your routers. Edit `controller/param.yaml`, then:
 
 ```bash
 cd controller
-./server.sh                 # dev mode (frontend on :5173, backend on :8080)
+docker compose up -d        # web UI and API on http://<this host>:8080
+# or, without Docker:
+./server.sh
 ```
 
 See [`controller/README.md`](controller/README.md) for systemd deployment,

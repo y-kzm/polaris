@@ -32,16 +32,36 @@ type Agent interface {
 // Dialer connects to the agent of a router.
 type Dialer func(router *store.Router) (Agent, error)
 
+// PlannedMessage is one control request message of Algorithm 1, in the form
+// it is sent to the hosts.
+type PlannedMessage struct {
+	SourceAddress         string   `json:"source_address"`
+	Preference            string   `json:"preference"`
+	RouterLifetimeSeconds int32    `json:"router_lifetime_seconds"`
+	Routes                []string `json:"routes"`
+	Clients               []string `json:"clients"`
+}
+
 // RouterResult is the outcome of applying the policy to one router.
 type RouterResult struct {
-	Router    string `json:"router"`
-	Address   string `json:"address"`
+	Router  string `json:"router"`
+	Address string `json:"address"`
+	// Status is the router's status in the registry: active or inactive.
+	Status string `json:"status"`
+	// Reachable is false if the agent could not be contacted.
+	Reachable bool   `json:"reachable"`
 	Success   bool   `json:"success"`
 	Error     string `json:"error,omitempty"`
-	Added     int    `json:"added"`
-	Updated   int    `json:"updated"`
-	Deleted   int    `json:"deleted"`
-	Unchanged int    `json:"unchanged"`
+	// Note explains a result that is not an error, such as an inactive
+	// router that could not be reached.
+	Note string `json:"note,omitempty"`
+	// Messages are the control request messages compiled for this router.
+	// Filled only on request (Options.Messages).
+	Messages  []PlannedMessage `json:"messages,omitempty"`
+	Added     int              `json:"added"`
+	Updated   int              `json:"updated"`
+	Deleted   int              `json:"deleted"`
+	Unchanged int              `json:"unchanged"`
 	// Withdrawn is the number of hosts that were sent a withdrawal RA.
 	Withdrawn int `json:"withdrawn"`
 }
@@ -52,6 +72,27 @@ type Result struct {
 	Warnings []string       `json:"warnings"`
 	Success  bool           `json:"success"`
 	DryRun   bool           `json:"dry_run"`
+}
+
+// Changes counts what the apply changed, or would change, on all routers.
+func (r *Result) Changes() int {
+	n := 0
+	for _, res := range r.Results {
+		n += res.Added + res.Updated + res.Deleted + res.Withdrawn
+	}
+	return n
+}
+
+// Options control one Apply.
+type Options struct {
+	// DryRun computes and reports the plans without changing any router.
+	DryRun bool
+	// Resolve looks up the prefixes of service entries.
+	Resolve Resolver
+	// Messages adds the compiled control request messages to the result.
+	Messages bool
+	// Quiet suppresses the log line of routers that needed no change.
+	Quiet bool
 }
 
 type routerJob struct {
@@ -76,9 +117,12 @@ type routerJob struct {
 // after the problem is fixed (or after the dead router is removed from the
 // registry) completes the transition.
 //
-// With dryRun the plans are computed and reported but nothing is changed.
-func Apply(ctx context.Context, dial Dialer, rules []store.Rule, groups []store.Group, routers []store.Router, dryRun bool) Result {
-	desired, warnings := Compile(rules, groups, routers)
+// An inactive router gets no policy: what it still runs is withdrawn. If it
+// cannot be reached, that is noted but does not count as a failure, so a
+// router that is down does not hold back the others.
+func Apply(ctx context.Context, dial Dialer, rules []store.Rule, groups []store.Group, routers []store.Router, opts Options) Result {
+	dryRun := opts.DryRun
+	desired, warnings := Compile(rules, groups, routers, opts.Resolve)
 	if warnings == nil {
 		warnings = []string{}
 	}
@@ -86,7 +130,14 @@ func Apply(ctx context.Context, dial Dialer, rules []store.Rule, groups []store.
 	jobs := make([]*routerJob, len(routers))
 	results := make([]RouterResult, len(routers))
 	for i := range routers {
-		results[i] = RouterResult{Router: routers[i].Name, Address: routers[i].Address}
+		status := store.StatusActive
+		if !routers[i].Active() {
+			status = store.StatusInactive
+		}
+		results[i] = RouterResult{Router: routers[i].Name, Address: routers[i].Address, Status: status}
+		if opts.Messages {
+			results[i].Messages = plannedMessages(&routers[i], desired[routers[i].ID])
+		}
 		jobs[i] = &routerJob{router: &routers[i], result: &results[i]}
 	}
 	defer func() {
@@ -99,17 +150,26 @@ func Apply(ctx context.Context, dial Dialer, rules []store.Rule, groups []store.
 
 	// Phase 0: read the running state and plan.
 	forEach(jobs, func(j *routerJob) {
+		unreachable := func(err error) {
+			if j.router.Active() {
+				j.result.Error = err.Error()
+			} else {
+				j.result.Note = fmt.Sprintf("inactive and unreachable (%v): any policy state it still advertises "+
+					"was not withdrawn", err)
+			}
+		}
 		agent, err := dial(j.router)
 		if err != nil {
-			j.result.Error = fmt.Sprintf("connect: %v", err)
+			unreachable(fmt.Errorf("connect: %w", err))
 			return
 		}
 		j.agent = agent
 		running, err := agent.ListInterfaces(ctx)
 		if err != nil {
-			j.result.Error = fmt.Sprintf("list interfaces: %v", err)
+			unreachable(fmt.Errorf("list interfaces: %w", err))
 			return
 		}
+		j.result.Reachable = true
 		plan, err := Reconcile(j.router, running, desired[j.router.ID])
 		if err != nil {
 			j.result.Error = err.Error()
@@ -175,26 +235,10 @@ func Apply(ctx context.Context, dial Dialer, rules []store.Rule, groups []store.
 			}
 		} else {
 			forEach(jobs, func(j *routerJob) {
-				var errs []error
-				for _, cfg := range j.plan.Shrink {
-					if err := j.agent.UpdateInterface(ctx, cfg); err != nil {
-						errs = append(errs, fmt.Errorf("update config #%d: %w", cfg.Id, err))
-					}
+				if j.plan == nil { // an inactive router that could not be reached
+					return
 				}
-				// The withdrawal RAs below cover everything the deleted
-				// configurations advertised, so no goodbye RA is needed.
-				for _, id := range j.plan.Delete {
-					if err := j.agent.DeleteInterface(ctx, id, true); err != nil {
-						errs = append(errs, fmt.Errorf("delete config #%d: %w", id, err))
-					}
-				}
-				// One failed withdrawal must not prevent the others.
-				for _, w := range j.plan.Withdraw {
-					if err := j.agent.SendRA(ctx, w.Config, w.Routes); err != nil {
-						errs = append(errs, fmt.Errorf("withdraw from %d host(s): %w", len(w.Config.Clients), err))
-					}
-				}
-				if err := errors.Join(errs...); err != nil {
+				if err := breakPhase(ctx, j.agent, j.plan); err != nil {
 					j.result.Error = err.Error()
 				}
 			})
@@ -209,11 +253,101 @@ func Apply(ctx context.Context, dial Dialer, rules []store.Rule, groups []store.
 			log.Printf("engine: %s (%s): %s", results[i].Router, results[i].Address, results[i].Error)
 			continue
 		}
+		changed := results[i].Added+results[i].Updated+results[i].Deleted+results[i].Withdrawn > 0
+		if opts.Quiet && !changed {
+			continue
+		}
 		log.Printf("engine: %s (%s): +%d ~%d -%d =%d, %d host(s) withdrawn (dry-run=%t)",
 			results[i].Router, results[i].Address, results[i].Added, results[i].Updated,
 			results[i].Deleted, results[i].Unchanged, results[i].Withdrawn, dryRun)
 	}
 	return Result{Results: results, Warnings: warnings, Success: success, DryRun: dryRun}
+}
+
+// breakPhase takes the obsolete state of one router away from the hosts.
+//
+// The withdrawal RAs go out before the configurations are removed. What has
+// to be withdrawn is derived from the running configurations, so once they
+// are gone a failed withdrawal could never be computed again and the hosts
+// would keep the routes until their lifetimes expire. If a withdrawal fails,
+// the configurations are left in place and the next apply or reconcile
+// starts over.
+//
+// A configuration that is still running may advertise once more between its
+// withdrawal and its removal, so the withdrawals are sent a second time at
+// the end; RAs are idempotent.
+func breakPhase(ctx context.Context, agent Agent, plan *Plan) error {
+	withdraw := func() error {
+		var errs []error
+		// One failed withdrawal must not prevent the others.
+		for _, w := range plan.Withdraw {
+			if err := agent.SendRA(ctx, w.Config, w.Routes); err != nil {
+				errs = append(errs, fmt.Errorf("withdraw from %d host(s): %w", len(w.Config.Clients), err))
+			}
+		}
+		return errors.Join(errs...)
+	}
+	if err := withdraw(); err != nil {
+		return fmt.Errorf("old policy kept on this router: %w", err)
+	}
+	var errs []error
+	for _, cfg := range plan.Shrink {
+		if err := agent.UpdateInterface(ctx, cfg); err != nil {
+			errs = append(errs, fmt.Errorf("update config #%d: %w", cfg.Id, err))
+		}
+	}
+	// The withdrawal RAs cover everything the deleted configurations
+	// advertised, so no goodbye RA is needed.
+	for _, id := range plan.Delete {
+		if err := agent.DeleteInterface(ctx, id, true); err != nil {
+			errs = append(errs, fmt.Errorf("delete config #%d: %w", id, err))
+		}
+	}
+	if len(plan.Shrink)+len(plan.Delete) > 0 {
+		errs = append(errs, withdraw())
+	}
+	return errors.Join(errs...)
+}
+
+// plannedMessages renders the compiled messages of a router as they are sent.
+func plannedMessages(router *store.Router, msgs []Message) []PlannedMessage {
+	out := make([]PlannedMessage, 0, len(msgs))
+	for i := range msgs {
+		cfg := buildConfig(router, 0, msgs[i].content(), msgs[i].Clients)
+		routes := make([]string, 0, len(cfg.Routes))
+		for _, r := range cfg.Routes {
+			routes = append(routes, r.Prefix)
+		}
+		out = append(out, PlannedMessage{
+			SourceAddress:         cfg.SourceAddress,
+			Preference:            cfg.Preference,
+			RouterLifetimeSeconds: int32(cfg.RouterLifetimeSeconds),
+			Routes:                routes,
+			Clients:               cfg.Clients,
+		})
+	}
+	return out
+}
+
+// Decommission removes everything the controller installed on a router and
+// withdraws it from the hosts. It is the last step before a router leaves
+// the registry: afterwards no host holds policy state of this router.
+// It returns the number of hosts that were sent a withdrawal RA.
+func Decommission(ctx context.Context, dial Dialer, router *store.Router) (int, error) {
+	agent, err := dial(router)
+	if err != nil {
+		return 0, fmt.Errorf("connect: %w", err)
+	}
+	defer agent.Close()
+	running, err := agent.ListInterfaces(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("list interfaces: %w", err)
+	}
+	plan, err := Reconcile(router, running, nil)
+	if err != nil {
+		return 0, err
+	}
+	return plan.WithdrawnHosts(), breakPhase(ctx, agent, plan)
 }
 
 // forEach runs f for every job concurrently and waits for all of them. An
