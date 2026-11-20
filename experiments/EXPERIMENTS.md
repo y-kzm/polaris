@@ -183,10 +183,11 @@ window is not a multiple of the intervals).
 | `load.json` | Frame sizes, RA counts, measured rate, equation values for the experiment's and the paper's intervals |
 | `raw/ra_capture.txt` | The RA capture |
 
-**Note**: the frame sizes differ from the paper's (now: baseline 110, c1 190,
-c2 78 bytes; paper: 142, 258, 90). The current go-ra encodes a Route
-Information Option for a prefix of /64 or shorter in 16 bytes. The numbers of
-Section V-B have to be updated from this experiment.
+**Note**: the baseline RA carries the prefix, MTU and DNS-server options and
+is 142 bytes, as in the paper. The policy RAs are smaller than the submitted
+paper's (now: c1 190, c2 78 bytes; paper: 258, 90). The current go-ra encodes
+a Route Information Option for a prefix of /64 or shorter in 16 bytes. The
+numbers of Section V-B have to be updated from this experiment.
 
 ---
 
