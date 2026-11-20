@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 
 from ..capture import FILTER_RA, Capture, parse_ras
-from ..config import Config
+from ..config import Config, ExpError
 from ..policy import paper
 from ..report import Run, fmt
 from ..site import Site
@@ -22,6 +22,9 @@ ALL_NODES = "ff02::1"
 
 def run(cfg: Config, site: Site, out: Run) -> None:
     """Capture RAs for a window and compare the measured bit rate with Equation 4."""
+    if cfg.single_address:
+        raise ExpError("load tells policy RAs from baseline RAs by their source address; "
+                       "it does not support site.single_address")
     settings = cfg.exp("load")
     baseline_ms = int(settings.get("baseline_interval_ms", 40_000))
     policy_ms = int(settings.get("policy_interval_ms", 4_000))

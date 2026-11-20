@@ -74,6 +74,7 @@ class Config:
     emulator_uplink: str = ""
     controller_port: int = 8080
     manage_nptv6: bool = True  # install the NPTv6 rules on the routers
+    single_address: bool = False  # policy RAs leave from the baseline address (submitted paper)
     experiments: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def router(self, key: str) -> RouterCfg:
@@ -205,6 +206,7 @@ def load(path: Path) -> Config:
             emulator_uplink=machines.get("emulator_uplink", ""),
             controller_port=int(raw.get("controller_port", 8080)),
             manage_nptv6=bool(site.get("manage_nptv6", mode == "single")),
+            single_address=bool(site.get("single_address", False)),
             experiments=raw.get("experiments", {}),
         )
     except (TypeError, ValueError) as err:

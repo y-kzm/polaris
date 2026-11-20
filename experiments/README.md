@@ -197,3 +197,11 @@ experiments/
 - **`N host(s) did not reach the '…' state`.** The message names the first
   differences. Inspect a host with `ip -n pxh001 -6 route show`, and the RA
   daemon's log in `/var/tmp/polaris-exp/proc/gorad-a.err`.
+
+## Single-address design
+
+`config/single-address.toml` reproduces the design of the submitted paper, in which every router sends its
+policy RAs from the same link-local address as its baseline RAs (`site.single_address = true`). Use it with
+`-c config/single-address.toml`. The `load` and `spread` experiments tell the two kinds of RA apart by
+their source address and are not available in this design; `transition` does not check the order of route
+changes for a default-route move, which only rewrites the preference of existing entries.

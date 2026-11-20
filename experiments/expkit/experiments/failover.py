@@ -121,7 +121,7 @@ class Trial:
             # Withdrawals this host needs: the baseline entry, and the policy entry if it has one.
             sources = {victim.base_ll}
             if key in want[i].high or key in want[i].rio.values():
-                sources.add(victim.cfg.policy_ll)
+                sources.add(self.site.policy_src(key))
             seen = [
                 min((ra.t for ra in withdrawals if ra.src == src and ra.dst in (ALL_NODES, host_ll(i))), default=None)
                 for src in sources
