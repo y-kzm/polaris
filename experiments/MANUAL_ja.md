@@ -46,15 +46,89 @@ scp tools/watchdog.py   <router-b>:~/px/
 |---|---|---|
 | `$WAN_A`、`$WAN_B` | ルータ(a)、(b) の上流インターフェース | `enp1s0` |
 | `$BR` | エミュレータで、ホストの netns がつながるブリッジ | `br0` |
-| `$DST` | D1 に含まれない宛先。ping に応答し、HTTP で接続元アドレスを返す | `2001:db8::1` |
-| `$DST_D1_LIST` | D1 の各 prefix の中のアドレスを 1 つずつ、空白区切りで並べたもの（7 個）。どれも HTTP で接続元アドレスを返す | `"2603:1027::1 2603:1037::1 2603:1047::1 2603:1057::1 2603:1063::1 2620:1ec:40::1 2620:1ec:6::1"` |
+| `$DST` | D1 に含まれない web サーバのアドレス。ping に応答し、HTTP で接続元アドレスを返す | `ifconfig.net` の AAAA の 1 つ（1.0 で調べる） |
+| `$DST_NAME` | `$DST` のホスト名 | `ifconfig.net` |
+| `d1_targets.txt` | D1 の各 prefix の中の web サーバを 1 行に 1 つ書いたファイル（7 行）。1.0 で作る | 下記 |
 
-`$DST_D1_LIST` の 7 個のアドレスは、`$DST` と同じ web サーバに付け、両方の上流網からそのサーバへ届くようにしておきます
-（サーバ: `ip -6 addr add <アドレス>/128 dev lo`、上流側のルータ: D1 の各 prefix をサーバへ向ける経路）。
+上流が実際の ISP（インターネット）の場合を前提にしています。D1 は Microsoft の prefix なので、
+D1 の宛先は Microsoft の実際のサーバ、D1 外の宛先は接続元アドレスを返す公開サービスです。
+接続元アドレスを返すのは D1 外のサーバだけで構いません（D1 の宛先は、両ルータの上流でのキャプチャと応答の受信で確認します）。
 
 ---
 
 ## 1. 準備（1 回だけ）
+
+### 1.0 宛先の web サーバを決める
+
+エミュレータのホスト 1 台（例: `pxh001`）から調べます。どのコマンドも数回の接続だけです。
+
+**(1) D1 外の宛先（`$DST`）**
+
+```sh
+DST_NAME=ifconfig.net
+DST=$(dig +short AAAA $DST_NAME | grep : | head -1); echo $DST
+sudo ip netns exec pxh001 curl -6 -sS --resolve "$DST_NAME:443:[$DST]" https://$DST_NAME/   # 自分の IPv6 アドレスが返る
+sudo ip netns exec pxh001 ping -6 -c 3 $DST                                                # 応答がある
+```
+
+返ったアドレスが、どちらかの ISP の prefix に入っていることを確認します。
+`$DST` が D1 のどの prefix にも入っていないことも確認します。
+ping に応答しない場合、failover（3 章）の宛先には ping に応答する別のアドレスを使います。
+
+**(2) D1 の 7 つの prefix の中の web サーバ（`d1_targets.txt`）**
+
+各 prefix について、その中にあって HTTPS に応答するアドレスを 1 つ探します。
+候補のホスト名を引き、どの prefix に入るかを表示するには次のとおりです。
+
+```sh
+python3 - <<'EOF'
+import ipaddress, socket
+D1 = ["2603:1027::/48", "2603:1037::/48", "2603:1047::/48", "2603:1057::/48",
+      "2603:1063::/38", "2620:1ec:6::/48", "2620:1ec:40::/42"]          # 論文の Table と同じ順にする
+NAMES = ["teams.microsoft.com", "login.microsoftonline.com", "teams.microsoft.us", "api.teams.skype.com",
+         "go.trouter.teams.microsoft.com", "worldaz.tr.teams.microsoft.com", "s-0005.dual-s-msedge.net"]
+for name in NAMES:
+    try:
+        addrs = sorted({a[4][0] for a in socket.getaddrinfo(name, 443, socket.AF_INET6)})
+    except OSError:
+        continue
+    for addr in addrs:
+        hit = [p for p in D1 if ipaddress.ip_address(addr) in ipaddress.ip_network(p)]
+        print(f"{hit[0] if hit else '(D1 の外)':18} {name} {addr}")
+EOF
+```
+
+2026-11-21 に日本から引いた結果では、`teams.microsoft.com` が `2603:1063::/38`、`login.microsoftonline.com` が
+`2603:1047::/48`、`teams.microsoft.us` が `2620:1ec:40::/42` に入りました（場所と時期で変わります）。
+残りの prefix（`2603:1027::/48`、`2603:1037::/48`、`2603:1057::/48`、`2620:1ec:6::/48`）は、この方法では見つかっていません。
+`2603:10x7::/48` は地域ごとのサインインのサーバと考えられるので、見つかったアドレスの 2 番目の 16 ビットだけを変えたアドレス
+（例: `2603:1047:1:a0::14` に対して `2603:1027:1:a0::14`）を候補として試してください（推測です。応答しなければ使えません）。
+
+候補のアドレスは、ホスト名を付けて次のように試します。HTTP の状態コードが 200〜399 なら使えます。
+
+```sh
+sudo ip netns exec pxh001 curl -6 -sS -o /dev/null -m 8 -w '%{http_code} %{remote_ip}\n' \
+     --resolve 'login.microsoftonline.com:443:[2603:1047:1:a0::14]' https://login.microsoftonline.com/
+```
+
+使えるものを、D1 の prefix の順（論文の Table と同じ順）に、`URL` と `--resolve の値` を空白で区切って 1 行ずつ書きます。
+
+```
+https://login.microsoftonline.com/ login.microsoftonline.com:443:[2603:1027:…]
+https://login.microsoftonline.com/ login.microsoftonline.com:443:[2603:1037:…]
+https://login.microsoftonline.com/ login.microsoftonline.com:443:[2603:1047:1:a0::14]
+https://login.microsoftonline.com/ login.microsoftonline.com:443:[2603:1057:…]
+https://teams.microsoft.com/ teams.microsoft.com:443:[2603:1063:27:1::14]
+https://… …:443:[2620:1ec:6:…]
+https://teams.microsoft.us/ teams.microsoft.us:443:[2620:1ec:42::131]
+```
+
+> **応答するサーバが見つからない prefix がある場合**: その prefix は測定から外し、見つかった prefix だけで行います
+> （`d1_targets.txt` の行数と、2.4 の `ports.json` の `range(1, 8)` をその数に合わせる）。
+> この場合、論文の「seven prefixes」の記述と Figure の列数を、測定した数に直す必要があります。
+
+> **アクセスの制限**: 1 回の測定で、同じ /64 から各サーバへ 200 件の接続が短時間に届きます。
+> 本番の前に `--hosts 1-10` で試し、すべて応答することを確認してください。応答が欠ける場合は `--parallel 4` などで同時接続数を下げます。
 
 ### 1.1 `site.json` を書く
 
@@ -64,7 +138,7 @@ scp tools/watchdog.py   <router-b>:~/px/
 {
   "hosts": 200,
   "g1_hosts": 50,
-  "default_dst": "2001:db8::1",
+  "default_dst": "<$DST のアドレス>",
   "ping_interval_s": 0.1,
   "victim": "b",
   "routers": {
@@ -118,7 +192,7 @@ port-base は宛先ごとに変えるので、キャプチャは 1 回の測定�
 
 | 宛先 | タグ（適用前 / 適用後） | port-base（適用前 / 適用後） |
 |---|---|---|
-| `$DST_D1_LIST` の n 番目（n = 1〜7） | `before_D1-n` / `after_D1-n` | 10000 + n × 1000 = 11000〜17000 / 20000 + n × 1000 = 21000〜27000 |
+| `d1_targets.txt` の n 行目（n = 1〜7） | `before_D1-n` / `after_D1-n` | 10000 + n × 1000 = 11000〜17000 / 20000 + n × 1000 = 21000〜27000 |
 | `$DST`（D1 外） | `before_default` / `after_default` | 18000 / 28000 |
 
 port-base はすべて 32768 未満にしています。それ以上は Linux が他の通信の送信元ポートに自動で割り当てる範囲で、
@@ -160,16 +234,17 @@ sudo tcpdump -i $WAN_B -nn -tt -l -B 16384 'ip6 and tcp and portrange 11001-1820
 ```sh
 PHASE=before; BASE=10000          # 適用後は PHASE=after; BASE=20000
 n=1
-for dst in $(echo $DST_D1_LIST); do     # $(echo …) は zsh でも空白で区切るため
-  sudo -E python3 ~/px/hostprobe.py curl --hosts 1-200 --url "http://[$dst]/" \
-       --port-base $((BASE + n * 1000)) > curl_${PHASE}_D1-$n.json
+while read -r url resolve; do           # d1_targets.txt の 1 行 = D1 の 1 つの prefix
+  sudo -E python3 ~/px/hostprobe.py curl --hosts 1-200 --url "$url" --resolve "$resolve" \
+       --port-base $((BASE + n * 1000)) < /dev/null > curl_${PHASE}_D1-$n.json
   n=$((n + 1))
-done
-sudo -E python3 ~/px/hostprobe.py curl --hosts 1-200 --url "http://[$DST]/" \
+done < d1_targets.txt
+sudo -E python3 ~/px/hostprobe.py curl --hosts 1-200 --url "https://$DST_NAME/" --resolve "$DST_NAME:443:[$DST]" \
      --port-base $((BASE + 8000)) > curl_${PHASE}_default.json
 ```
 
-URL がホスト名の場合は、`--resolve '<ホスト名>:443:[<アドレス>]'` で宛先アドレスを固定できます。
+`--resolve` で宛先アドレスを固定しているので、どのホストも同じアドレスへ接続します。
+各ファイルで、`"http"` が 200〜399、`"remote"` が指定したアドレスになっていることを確認します。
 
 **(3) キャプチャを止める**: 両ルータで Ctrl-C。`0 packets dropped by kernel` を確認します。
 
@@ -354,8 +429,9 @@ v2 の本文は、次の構成を前提に書いています。実機が違う�
 
 | 本文の記述 | 確認すること |
 |---|---|
-| 「両方の上流網から到達できる web サーバが、観測した送信元アドレスを返す」 | 応答の本文に接続元の IPv6 アドレスが含まれるか。含まれない宛先では、`ISP observed by the server` の列が `n/a` になる |
-| 「D1 の 7 つの prefix それぞれの中のアドレスと 2001:db8::1 に要求を送る」 | 実際に使った宛先 |
+| 「D1 外の web サーバが、観測した送信元アドレスを返す」 | D1 外の宛先（`default`）の応答の本文に、接続元の IPv6 アドレスが含まれるか。含まれないと `make_values.py` が止まる。D1 の宛先では不要で、`ISP observed by the server` の列は `n/a` になる |
+| 「D1 の 7 つの prefix それぞれの中の web サーバと、D1 外の web サーバに要求を送る」 | 実際に使った宛先と、その数（7 より少ない場合は本文と Figure を直す） |
+| 「3,200 件すべてに応答があった」 | 公開サーバの制限で応答が欠けていないか |
 | 「エコー要求は 100 ms 間隔」 | `--interval 0.1` のままか |
 | 「ルータ(b) の監視プロセスが上流インターフェースのキャリアを監視し、失われたら RA デーモンを止める」 | `watchdog.py` を既定（`--mode link`）で使ったか |
 
